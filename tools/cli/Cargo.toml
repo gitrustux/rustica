@@ -1,0 +1,55 @@
+# Rustica Userspace CLI Workspace
+#
+# This workspace contains all userspace CLI utilities for the Rustica OS.
+# Each utility is a separate binary crate that can be built independently.
+
+[workspace]
+members = [
+    "src/sh",
+    "src/init",
+    "src/coreutils",
+    "src/networkutils",
+    "src/pkgutil",
+    "src/fwctl",
+    "src/storageutils",
+    "src/svc",
+]
+
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/gitrustux/rustica"
+homepage = "https://rustux.com"
+
+[workspace.dependencies]
+# Common dependencies for all CLI tools
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# Async runtime (for networking tools)
+tokio = { version = "1.35", features = ["full"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Serialization (for package manager)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP client (for package manager)
+reqwest = "0.11"
+
+# File handling
+walkdir = "2.4"
+
+# Date/time
+chrono = "0.4"

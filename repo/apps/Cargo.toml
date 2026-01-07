@@ -1,0 +1,70 @@
+# Rustica Applications Workspace
+#
+# This workspace contains all applications, libraries, and tools
+# for the Rustica Operating System.
+
+[workspace]
+members = [
+    # CLI Applications
+    "cli/redit",
+    "cli/net-tools",
+    "cli/sys-tools",
+
+    # GUI Applications (Aurora Desktop)
+    "gui/aurora-shell",
+    "gui/aurora-panel",
+    "gui/aurora-launcher",
+
+    # Shared Libraries
+    "libs/rutils",
+    "libs/rgui",
+    "libs/netlib",
+
+    # Examples
+    "examples/hello-world",
+    "examples/file-manager",
+]
+
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/gitrustux/rustica"
+homepage = "https://rustux.com"
+
+[workspace.dependencies]
+# Common dependencies for all workspace members
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# GUI dependencies (when needed)
+egui = "0.27"
+winit = "0.29"
+softbuffer = "0.4"
+
+# Networking
+tokio-util = "0.7"
+
+# File handling
+walkdir = "2.4"
+
+# Date/time
+chrono = "0.4"

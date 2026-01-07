@@ -1,0 +1,15 @@
+[package]
+name = "sys-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+nix = { version = "0.27", features = ["process", "signal"] }
+libc = "0.2"
+procfs = "0.16"
+chrono = "0.4"

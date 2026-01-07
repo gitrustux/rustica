@@ -1,0 +1,29 @@
+[package]
+name = "storageutils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mount"
+path = "src/bin/mount.rs"
+
+[[bin]]
+name = "umount"
+path = "src/bin/umount.rs"
+
+[[bin]]
+name = "blklist"
+path = "src/bin/blklist.rs"
+
+[[bin]]
+name = "mkfs-rfs"
+path = "src/bin/mkfs-rfs.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+nix = { version = "0.27", features = ["mount"] }
+libc = "0.2"

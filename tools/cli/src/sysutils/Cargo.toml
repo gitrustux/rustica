@@ -1,0 +1,34 @@
+[package]
+name = "sysutils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ps"
+path = "src/bin/ps.rs"
+
+[[bin]]
+name = "kill"
+path = "src/bin/kill.rs"
+
+[[bin]]
+name = "dmesg"
+path = "src/bin/dmesg.rs"
+
+[[bin]]
+name = "uname"
+path = "src/bin/uname.rs"
+
+[[bin]]
+name = "date"
+path = "src/bin/date.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+chrono.workspace = true
+libc = "0.2"
+nix = { version = "0.27", features = ["process", "signal"] }

@@ -1,0 +1,22 @@
+[package]
+name = "svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "svc"
+path = "src/bin/svc.rs"
+
+[[bin]]
+name = "system-check"
+path = "src/bin/system-check.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"

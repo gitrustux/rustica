@@ -1,0 +1,12 @@
+[package]
+name = "sh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+nix = "0.27"

@@ -1,0 +1,15 @@
+[package]
+name = "net-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+tokio.workspace = true
+nix = "0.27"
+libc = "0.2"
+pinger = "0.2"

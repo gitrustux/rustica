@@ -1,0 +1,17 @@
+[package]
+name = "fwctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fwctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
