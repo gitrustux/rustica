@@ -1,5 +1,7 @@
 // System information utilities
 
+use alloc::string::String;
+
 pub struct SystemInfo {
     pub hostname: String,
     pub os_version: String,

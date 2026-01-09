@@ -6,10 +6,8 @@
 
 //! Output formatting utilities
 
-use std::io::{self, Write};
-
 /// Print columns with padding
-pub fn print_columns(items: &[String], width: usize) {
+pub fn print_columns(items: &[String], _width: usize) {
     if items.is_empty() {
         return;
     }

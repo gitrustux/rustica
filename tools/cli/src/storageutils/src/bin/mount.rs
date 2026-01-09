@@ -113,7 +113,7 @@ fn main() -> Result<()> {
             mount(
                 fs_type_cstr.as_ref().map(|s| s.as_c_str()),
                 source_cstr.as_c_str(),
-                target_cstr.as_c_str(),
+                Some(target_cstr.as_c_str()),
                 flags,
                 None::<&str>,
             ).context("mount failed")?;

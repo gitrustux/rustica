@@ -47,7 +47,7 @@ fn main() -> Result<()> {
         }
 
         if args.verbose {
-            println!("Creating file: {}", args.args.device);
+            println!("Creating file: {}", args.device);
         }
 
         // Create a 1GB file

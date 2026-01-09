@@ -8,7 +8,7 @@
 //!
 //! Firewall management tool with nftables-style syntax.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
@@ -188,7 +188,7 @@ impl Firewall {
     }
 
     fn load_config(path: &PathBuf) -> Result<FirewallConfig> {
-        let content = fs::read_to_string(path)?;
+        let _content = fs::read_to_string(path)?;
         // In production, would parse rules file
         // For now, return default
         let mut config = FirewallConfig::new();
@@ -326,7 +326,7 @@ impl Firewall {
         // Validate policy
         match policy.as_str() {
             "accept" | "drop" | "reject" => {
-                self.config.default_policy = policy;
+                self.config.default_policy = policy.clone();
                 self.save_config()?;
                 println!("Default policy for {} set to {}.", chain, policy);
                 Ok(())

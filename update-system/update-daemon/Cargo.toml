@@ -1,0 +1,20 @@
+[package]
+name = "update-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustic-update-daemon"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+log.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Local crates
+rpg-core = { path = "../rpg-core" }

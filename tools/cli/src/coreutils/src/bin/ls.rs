@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use coreutils::{file_utils, print_columns};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

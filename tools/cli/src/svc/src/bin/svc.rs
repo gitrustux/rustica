@@ -184,7 +184,7 @@ impl ServiceManager {
         let mut working_dir = None;
         let mut auto_start = false;
 
-        let mut current_section = "";
+        let mut current_section = String::new();
 
         for line in content.lines() {
             let line = line.trim();
@@ -205,7 +205,7 @@ impl ServiceManager {
                 let key = key.trim();
                 let value = value.trim();
 
-                match (current_section, key) {
+                match (current_section.as_str(), key) {
                     ("Unit", "Description") => description = value.to_string(),
                     ("Service", "ExecStart") => exec_start = value.to_string(),
                     ("Service", "ExecStop") => exec_stop = Some(value.to_string()),

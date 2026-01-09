@@ -6,7 +6,7 @@
 
 //! rm - Remove files or directories
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use coreutils::file_utils::remove_path;
 use std::path::Path;

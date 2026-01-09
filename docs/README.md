@@ -131,10 +131,343 @@ A complete Wayland-based desktop environment built with Rust and Smithay.
 
 ## 📦 Package Management (Phase 9)
 
-### Package Manager Integration
+### Live Update System - RPG (Rustica Package Manager)
+
+Rustica OS features a comprehensive live update system built from scratch in Rust, enabling atomic package operations, full rollback support, and background updates without system interruption.
+
+#### System Architecture
+
+**Location**: `/var/www/rustux.com/prod/rustica/update-system/`
+
+```
+update-system/
+├── rpg-core/              # Core library
+│   ├── lib.rs           # Main entry point
+│   ├── archive.rs        # .rpg package format
+│   ├── ops.rs            # High-level operations
+│   ├── fetch.rs          # HTTP downloading with failover
+│   ├── sources.rs        # Repository source management
+│   ├── transaction.rs    # Transaction management
+│   ├── registry.rs       # Package registry
+│   ├── layout.rs         # Filesystem layout
+│   ├── signature.rs      # Ed25519 cryptographic signing
+│   ├── package.rs        # Package types
+│   ├── version.rs        # Semantic versioning
+│   └── symlink.rs        # Atomic symlink operations
+├── rpg/                  # CLI tool
+│   └── src/bin/rpg.rs    # Command implementation
+└── update-daemon/        # Background service
+    └── src/main.rs       # Update daemon
+```
+
+#### Package Format (.rpg)
+
+RPG packages are tar.gz archives with the following structure:
+
+```
+package.rpg
+├── metadata.json          # Package manifest
+├── files/                 # Actual files to install
+│   ├── usr/
+│   ├── bin/
+│   └── ...
+├── scripts/               # Installation scripts (optional)
+│   ├── pre-install.sh
+│   ├── post-install.sh
+│   └── pre-remove.sh
+└── signature.sig          # Detached Ed25519 signature
+```
+
+**metadata.json structure:**
+```json
+{
+  "name": "example-app",
+  "version": "1.2.3",
+  "type": "app",
+  "arch": "x86_64",
+  "description": "An example application",
+  "size": 1048576,
+  "sha256": "abc123...",
+  "dependencies": ["libfoo >= 1.0"],
+  "files": ["usr/bin/app", "usr/share/app/..."],
+  "signature": "base64-encoded-signature"
+}
+```
+
+#### Filesystem Layout
+
+Versioned packages are installed to separate directories:
+
+```
+/system/
+├── v1.0.0/           # System version 1.0.0
+│   ├── usr/
+│   ├── bin/
+│   └── ...
+├── v1.1.0/           # System version 1.1.0
+├── current -> v1.1.0 # Active version (symlink)
+
+/apps/
+├── example-app/
+│   ├── 1.0.0/       # App version 1.0.0
+│   │   ├── bin/
+│   │   └── share/
+│   ├── 1.1.0/       # App version 1.1.0
+│   └── current -> 1.1.0
+```
+
+#### Key Features
+
+1. **Atomic Operations**
+   - Never overwrites active files
+   - Versioned directory layout
+   - Atomic symlink swaps for activation
+   - POSIX `rename()` ensures atomicity
+
+2. **Rollback Support**
+   - Previous versions retained until explicitly removed
+   - Transaction history tracking
+   - One-command rollback to any previous version
+   - Automatic rollback on failure
+
+3. **Live Updates**
+   - Applications update while running
+   - Userland updates without interruption
+   - Kernel updates installed alongside, activated on reboot
+   - Background download capability
+
+4. **Cryptographic Security**
+   - Ed25519 digital signatures
+   - SHA-256 checksum verification
+   - Public key infrastructure
+   - Signature verification before installation
+
+5. **Multiple Source Support**
+   - Configurable repository sources
+   - Priority-based source selection
+   - Automatic failover on source failure
+   - Per-source enable/disable
+
+#### Configuration
+
+**Sources Configuration** (`/etc/rpg/sources.list`):
+```
+# Rustica Package Sources
+# Format: type url [priority]
+# Types: kernel, system, apps
+
+kernel http://rustux.com/kernel 10
+system http://rustux.com/rustica 10
+apps http://rustux.com/apps 10
+
+# Mirror sources (higher priority = preferred)
+kernel-mirror http://mirror.example.com/kernel 5
+```
+
+**Source Types:**
+- `kernel` - Kernel packages (require reboot)
+- `system` - System userland packages
+- `apps` - Application packages
+
+#### CLI Commands
+
+```bash
+# Check for updates
+rpg update --check-only
+
+# Install all updates
+rpg update
+
+# Install updates in background
+rpg update --background
+
+# Install specific package
+rpg install <package>
+
+# Install specific version
+rpg install <package> --version 1.2.3
+
+# Remove package
+rpg remove <package>
+
+# Rollback to previous version
+rpg rollback <package>
+
+# Rollback system
+rpg rollback system
+
+# Show status
+rpg status
+
+# Show detailed status
+rpg status --detailed
+
+# List packages
+rpg list
+
+# List with filter
+rpg list --pattern "web" --kind app
+
+# Manage sources
+rpg sources list
+rpg sources add mirror https://mirror.example.com/apps 50
+rpg sources remove mirror
+rpg sources enable mirror
+rpg sources disable mirror
+rpg sources check
+```
+
+#### Package Manager API
+
+**High-level operations:**
+```rust
+use rpg_core::PackageManager;
+
+let manager = PackageManager::new()?;
+
+// Check for updates
+let updates = manager.check_updates().await?;
+
+// Install package
+manager.install_package("app", Some("1.0.0"), PackageKind::App).await?;
+
+// Update all packages
+let result = manager.update_all().await?;
+
+// Rollback
+manager.rollback("app", None).await?;
+
+// List installed
+let packages = manager.list_installed().await?;
+
+// Get status
+let status = manager.get_status().await?;
+```
+
+#### Transaction Management
+
+All package operations run within transactions:
+
+```rust
+use rpg_core::{Transaction, TransactionKind};
+
+// Transaction automatically:
+// 1. Creates versioned directory
+// 2. Extracts package files
+// 3. Updates metadata
+// 4. Performs atomic symlink swap
+// 5. Records rollback information
+// 6. On failure: automatically rolls back
+```
+
+**Transaction Results:**
+- `Success { activated, requires_reboot }` - Installation succeeded
+- `Failed { error, partial }` - Installation failed with partial installation
+- `RolledBack { reason }` - Transaction was rolled back
+
+#### Package Creation
+
+Create an `.rpg` package:
+
+```rust
+use rpg_core::{PackageManifest, PackageArchive, create_package};
+use rpg_core::{PackageKind, signature::KeyPair};
+
+// Generate signing key
+let key = KeyPair::generate();
+let signature = key.sign(b"package-data");
+
+// Create manifest
+let manifest = PackageManifest::new(
+    "myapp".to_string(),
+    "1.0.0".to_string(),
+    PackageKind::App,
+    "x86_64".to_string(),
+    1024 * 1024, // size
+    sha256_hash,
+    "https://rustux.com/apps/myapp-1.0.0.rpg".to_string(),
+    signature,
+);
+
+// Create package
+create_package(
+    "/path/to/source/files",
+    "/output/myapp-1.0.0.rpg",
+    manifest,
+)?;
+```
+
+#### Registry
+
+Package installation state tracked in `/var/lib/rpg/registry.json`:
+
+```json
+{
+  "packages": {
+    "myapp": [
+      {"major": 1, "minor": 0, "patch": 0, "pre": null, "build": null},
+      {"major": 0, "minor": 9, "patch": 0, "pre": null, "build": null}
+    ]
+  },
+  "active": {
+    "myapp": {"major": 1, "minor": 0, "patch": 0}
+  },
+  "transactions": [...],
+  "pending": []
+}
+```
+
+#### Update Daemon
+
+Background service (`rustic-update-daemon`) for:
+
+- Periodic update checks
+- Background downloads
+- User preference handling
+- Transaction queue management
+- System reboot coordination
+
+#### Security Features
+
+1. **Ed25519 Signatures**
+   - Each package signed with developer key
+   - Public key verification before installation
+   - Signature stored in package manifest
+
+2. **SHA-256 Checksums**
+   - Computed before download from repository
+   - Verified after download
+   - Mismatch = automatic rejection
+
+3. **Atomic Operations**
+   - No partial states
+   - All-or-nothing installation
+   - Automatic rollback on failure
+
+4. **Capability Integration**
+   - Packages declare capability requirements
+   - Verified before installation
+   - Integration with `capctl` system
+
+#### Error Handling
+
+Comprehensive error types:
+- `Io` - Filesystem errors
+- `Serialization` - JSON parse errors
+- `Network` - Download failures
+- `SignatureVerification` - Invalid signatures
+- `PackageNotFound` - Missing packages
+- `VersionNotFound` - Missing versions
+- `TransactionFailed` - Operation failures
+- `RollbackFailed` - Rollback failures
+- `Layout` - Filesystem layout issues
+- `PermissionDenied` - Permission issues
+
+#### Package Manager Integration
+
 - **Flatpak**: Flatpak integration for third-party apps
 - **AppImage**: AppImage support for portable applications
-- **System Package Manager**: Native `rpg` integration
+- **Native RPG**: Full `rpg` integration with live updates
 
 ---
 
@@ -336,7 +669,7 @@ Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
 
 | Tool | Description | Location |
 |------|-------------|----------|
-| `rpg` | Package manager with ed25519 digital signatures | `cli/rpg/` |
+| `rpg` | **Live update system** with atomic operations, rollback, Ed25519 signatures | `rustica/update-system/` |
 | `pkg-compat` | Backward compatibility wrapper (pkg → rpg) | `cli/pkg-compat/` |
 | `svc` | Service manager (systemd-style init) | `cli/svc/` |
 | `ip` | Network configuration (netlink-based) | `cli/ip/` |
@@ -372,13 +705,24 @@ Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
 - Detects other operating systems
 - Commands: `list`, `set-order`, `add`, `remove`, `set-next-boot`, `detect-os`, `export`, `status`
 
-**Package Manager (`rpg`)**:
-- Repository management and package installation
-- SHA256 checksum verification
-- **ed25519 digital signature verification**
-- Key generation, import, export, trust management
-- **Capability-aware package installation**
-- Commands: `update`, `install`, `remove`, `search`, `upgrade`, `list`, `info`, `keygen`, `export-key`, `import-key`, `sign-package`, `list-keys`
+**Package Manager (`rpg`)** - Live Update System:
+- **Location**: `/var/www/rustux.com/prod/rustica/update-system/`
+- **Features**:
+  - Live updates without system interruption
+  - Atomic package operations with versioned filesystem
+  - Full rollback support to any previous version
+  - Background download and installation
+  - Ed25519 digital signature verification
+  - SHA-256 checksum verification
+  - Multiple repository sources with automatic failover
+  - Transaction-based operations (install, remove, upgrade, rollback)
+  - Support for kernel, system, and application packages
+- **Package Format**: `.rpg` tar.gz archives with metadata.json
+- **Filesystem Layout**: Versioned directories (`/system/vX.Y.Z/`, `/apps/<name>/<version>/`)
+- **Activation**: Atomic symlink swaps (POSIX rename)
+- **Configuration**: `/etc/rpg/sources.list` for repository sources
+- **Registry**: `/var/lib/rpg/registry.json` for package state
+- **Commands**: `update`, `install`, `remove`, `rollback`, `status`, `list`, `sources`
 
 **System Installer (`rustux-install`)**:
 - Filesystem selection: **ext4**, **F2FS** (mobile-optimized), **btrfs**
@@ -391,6 +735,16 @@ Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
 ---
 
 ## 🎯 Key Features
+
+### Live Update System
+- **Atomic Package Operations**: Never overwrites active files
+- **Versioned Filesystem**: `/system/vX.Y.Z/` and `/apps/<name>/<version>/` layout
+- **Full Rollback Support**: One-command rollback to any previous version
+- **Live Updates**: Applications update while running
+- **Background Downloads**: Non-intrusive update downloads
+- **Cryptographic Security**: Ed25519 signatures + SHA-256 verification
+- **Multiple Sources**: Configurable repositories with automatic failover
+- **Transaction-Based**: ACID-like properties for all operations
 
 ### Capability-Based Security
 - Kernel object model mapped to file permissions
@@ -425,7 +779,6 @@ Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
 /var/www/rustux.com/prod/
 ├── apps/
 │   ├── cli/              # CLI applications (18 tools)
-│   │   ├── rpg/          # Package manager
 │   │   ├── pkg-compat/   # Backward compatibility wrapper
 │   │   ├── capctl/       # Capability control
 │   │   ├── sbctl/        # Secure boot management
@@ -466,7 +819,11 @@ Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
     ├── docs/
     │   ├── rustica_checklist.txt
     │   └── README.md      # This file
-    └── todo.md
+    ├── todo.md
+    └── update-system/    # Live update system (RPG) ✨ NEW
+        ├── rpg-core/     # Core library
+        ├── rpg/          # CLI tool
+        └── update-daemon/ # Background service
 ```
 
 ---
@@ -479,7 +836,6 @@ Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
 cargo build --release --workspace
 
 # Build specific tool
-cargo build --release -p rustux-rpg
 cargo build --release -p rustux-capctl
 cargo build --release -p rustux-sbctl
 cargo build --release -p rustux-bootctl
@@ -489,6 +845,28 @@ cargo build --release --target x86_64-unknown-linux-gnu
 
 # Build all tools for all architectures
 ./build-all-archs.sh
+```
+
+### Live Update System (RPG)
+```bash
+# Navigate to update system directory
+cd /var/www/rustux.com/prod/rustica/update-system
+
+# Build all components
+cargo build --release
+
+# Build specific component
+cargo build --release -p rpg-core
+cargo build --release -p rpg
+cargo build --release -p update-daemon
+
+# Run the CLI
+./target/release/rpg --help
+./target/release/rpg status
+./target/release/rpg update --check-only
+
+# Run the daemon
+./target/release/rustic-update-daemon
 ```
 
 ### GUI Applications
@@ -519,10 +897,33 @@ RUSTICA_MOBILE_MODE=1 cargo build --release -p rustica-web
 
 ### Package Management
 ```bash
+# Check for available updates
+rpg update --check-only
+
+# Update all packages
 rpg update
-rpg install vim
+
+# Install a package
+rpg install firefox
+
+# Install specific version
+rpg install firefox --version 120.0.0
+
+# List packages
 rpg list
-rpg info vim
+
+# Remove package
+rpg remove firefox
+
+# Rollback to previous version
+rpg rollback firefox
+
+# Check system status
+rpg status --detailed
+
+# Manage repository sources
+rpg sources list
+rpg sources add mirror https://mirror.example.com/apps 50
 ```
 
 ### Capability Management
@@ -645,6 +1046,6 @@ MIT License - See LICENSE file for details
 
 ---
 
-*Last updated: January 7, 2025*
+*Last updated: January 8, 2026*
 
 **Status**: ✅ All phases (0-12) complete - Production ready

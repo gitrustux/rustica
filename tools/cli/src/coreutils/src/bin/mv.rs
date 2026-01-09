@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Move (rename) files
 #[derive(Parser, Debug)]

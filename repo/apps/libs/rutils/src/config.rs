@@ -1,5 +1,8 @@
 // Configuration utilities
 
+use alloc::vec::Vec;
+use alloc::string::String;
+
 pub struct Config {
     pub settings: Vec<(String, String)>,
 }

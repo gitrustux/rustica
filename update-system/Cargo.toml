@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = ["rpg-core", "rpg", "update-daemon"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["The Rustux Authors"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.49", features = ["full"] }
+tokio-stream = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Crypto
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# File operations
+tempfile = "3.17"
+
+# Archive handling
+tar = "0.4"
+flate2 = "1.0"
+walkdir = "2.5"
+
+# System info
+sysinfo = "0.33"
+
+# Semver
+semver = { version = "1.0", features = ["serde"] }
+
+# UUID/ULID
+ulid = { version = "1.2", features = ["serde"] }
+
+# Random number generation
+rand = "0.8"

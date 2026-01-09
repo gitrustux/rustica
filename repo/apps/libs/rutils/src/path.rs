@@ -1,5 +1,8 @@
 // File path utilities
 
+use alloc::string::String;
+use alloc::format;
+
 pub fn canonicalize(path: &str) -> Result<String, ()> {
     // TODO: Implement path canonicalization
     Ok(path.to_string())
