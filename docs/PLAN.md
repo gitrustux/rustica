@@ -1,9 +1,9 @@
 # Rustica OS - Kernel Integration Plan
 
 **Date:** 2025-01-18
-**Status:** Phase 3A - Kernel boots successfully, ARCHITECTURE.md created ✅
-**Last Milestone:** Timer & keyboard interrupts working in QEMU ✅
-**Next Milestone:** Implement userspace process execution
+**Status:** Phase 3A Complete → Phase 4 (Userspace Foundation)
+**Last Milestone:** CLI tool with QEMU integration ✅
+**Next Milestone:** Phase 4A - ELF Loader implementation
 
 ---
 
@@ -656,7 +656,341 @@ Phase 2C (Completed):
 
 ---
 
-## Part 14: Contact & Resources
+## Part 14: Phase 4 - Userspace & Live Image Implementation
+
+**Goal:** Transform bare kernel into bootable live OS with working CLI tools
+**Status:** Phase 3A (CLI) → Phase 4 (Userspace Foundation)
+**Duration:** 6-8 weeks estimated
+
+### Overview
+
+This phase transforms the bare microkernel (which boots to runtime mode) into a bootable live OS with working userspace CLI tools.
+
+### Phase 4A: ELF Loader (CRITICAL - Week 1-2)
+**Priority:** 🔴 HIGHEST - Nothing else works without this
+
+#### 4A.1: Implement ELF Parser
+```rust
+// src/exec/elf.rs
+struct ElfHeader {
+    e_ident: [u8; 16],     // Magic number: 0x7F 'ELF'
+    e_type: u16,           // Relocatable, Executable, etc.
+    e_machine: u16,        // Architecture: x86_64
+    e_entry: u64,         // Entry point address
+    // ...
+}
+
+struct ProgramHeader {
+    p_type: u32,          // LOAD, DYNAMIC, INTERP, etc.
+    p_flags: u32,         // R, W, X permissions
+    p_vaddr: u64,         // Virtual address
+    p_paddr: u64,         // Physical address
+    p_filesz: u64,        // Size in file
+    p_memsz: u64,         // Size in memory
+    p_offset: u64,        // Offset in file
+}
+```
+
+#### 4A.2: Map ELF Segments
+- Create VMO for code segment (LOAD, R+X)
+- Create VMO for data segment (LOAD, R+W)
+- Create VMO for BSS segment (zero-filled)
+- Handle dynamic linking (initially: reject dynamic ELFs)
+
+#### 4A.3: Set Up Initial User Stack
+- Allocate stack VMO (default: 8MB)
+- Map stack at high address (e.g., 0x7fff_ffff_f000)
+- Push argc, argv, envp
+
+#### 4A.4: Create Initial Thread
+- Set instruction pointer to ELF entry
+- Set stack pointer to user stack
+- Set up user mode segment selectors
+
+#### 4A.5: Success Criteria
+- ✅ Can load static ELF binary
+- ✅ Can jump to user mode
+- ✅ Binary executes at least one instruction
+
+---
+
+### Phase 4B: Syscall Implementation (CRITICAL - Week 2-3)
+**Priority:** 🔴 HIGHEST - Userspace needs working syscalls
+
+#### 4B.1: Essential Syscalls (Minimum Viable Set)
+
+Implement these 10 syscalls first:
+
+| Syscall | Priority | Description |
+|---------|----------|-------------|
+| `sys_exit` | 🔴 Critical | Process termination |
+| `sys_write` | 🔴 Critical | Console output (stdout/stderr) |
+| `sys_read` | 🔴 Critical | Console input (stdin) |
+| `sys_mmap` | 🔴 High | Memory allocation |
+| `sys_munmap` | 🟡 Medium | Memory deallocation |
+| `sys_brk` | 🟡 Medium | Heap management |
+| `sys_clock_gettime` | ✅ Done | Time queries (already working!) |
+| `sys_nanosleep` | 🟡 Medium | Sleep/delays |
+| `sys_getpid` | 🟢 Low | Get process ID |
+| `sys_kill` | 🟢 Low | Signal delivery |
+
+#### 4B.2: Syscall Descriptions
+
+**sys_exit(status)**
+- Clean up process resources
+- Remove from scheduler
+- Return status to parent (if any)
+
+**sys_write(fd, buf, count)**
+- Validate fd (initially: only stdout/stderr = 1/2)
+- Copy buffer from userspace
+- Write to debug console (port 0xE9 for now)
+- Return bytes written
+
+**sys_read(fd, buf, count)**
+- Validate fd (initially: only stdin = 0)
+- Block until input available
+- Copy to user buffer
+- Return bytes read
+
+**sys_mmap(addr, length, prot, flags)**
+- Create VMO of requested size
+- Map into process address space
+- Set protection flags (R/W/X)
+- Return mapped address
+
+**sys_munmap(addr, length)**
+- Find VMO at address
+- Unmap from address space
+- Destroy VMO
+
+**sys_brk(addr)**
+- Adjust process heap end
+- Allocate/deallocate pages as needed
+- Return new heap end
+
+#### 4B.3: Success Criteria
+- ✅ Can call sys_write from userspace
+- ✅ Can see output on debug console
+- ✅ Can allocate memory with sys_mmap
+- ✅ Can exit with sys_exit
+
+---
+
+### Phase 4C: Scheduler Start (HIGH - Week 3)
+**Priority:** 🟠 HIGH - Needed for multi-process
+
+#### 4C.1: Bootstrap Initial Process
+- Create init process (PID 1)
+- Load /sbin/init ELF
+- Set up address space
+- Create initial thread
+- Add to run queue
+
+#### 4C.2: Start Scheduler
+- Enable timer interrupts for preemption
+- Implement context switch in timer handler
+- Round-robin scheduling initially
+
+#### 4C.3: Process Spawning
+- `sys_fork()` - Create child process
+- `sys_execve()` - Replace process image
+- `sys_waitpid()` - Wait for child termination
+
+#### 4C.4: Success Criteria
+- ✅ Can run init process (PID 1)
+- ✅ Can fork child process
+- ✅ Can switch between processes
+- ✅ Timer preemption works
+
+---
+
+### Phase 4D: Minimal Filesystem (HIGH - Week 4)
+**Priority:** 🟠 HIGH - Needed to load programs
+
+#### 4D.1: Initial Ramdisk (initrd)
+Don't implement a full VFS yet - just load files from memory:
+
+**Create initrd format:**
+```
+Simple tar-like format: [header][data][header][data]...
+Header: {name: [256]u8, size: u64, offset: u64}
+```
+
+**Implement initrd parser:**
+- Parse headers
+- Build file table in memory
+- Lookup files by path
+
+**Implement minimal file operations:**
+- `sys_open(path, flags)` - Open file from initrd
+- `sys_close(fd)` - Close file descriptor
+- `sys_read(fd, buf, count)` - Read from initrd file
+- `sys_stat(path, buf)` - Get file info
+
+**Files to include in initrd:**
+- `/sbin/init` - Init process (PID 1)
+- `/bin/sh` - Shell
+- `/bin/ls` - List files
+- `/bin/cat` - Display files
+- `/bin/echo` - Print text
+
+#### 4D.2: Success Criteria
+- ✅ Can load files from initrd
+- ✅ Can open, read, close files
+- ✅ Can execute programs from initrd
+- ✅ Shell runs from /bin/sh
+
+---
+
+### Phase 4E: Console Driver (MEDIUM - Week 4-5)
+**Priority:** 🟡 MEDIUM - Better than debug console
+
+#### 4E.1: Choose Console Type
+
+**Option A: VGA Text Mode (simpler)**
+- Initialize VGA buffer at 0xB8000
+- Implement scrolling
+- Handle cursor positioning
+- Map to sys_write for stdout
+
+**Option B: Serial Console (better for debugging)**
+- Initialize UART (COM1: 0x3F8)
+- Configure baud rate (115200)
+- Implement TX/RX buffers
+- Map to sys_write/sys_read
+
+#### 4E.2: Success Criteria
+- ✅ Console replaces debug port
+- ✅ Can type and see echo
+- ✅ Can scroll output
+- ✅ Cursor positioning works
+
+---
+
+### Phase 4F: Live Image Creation (MEDIUM - Week 5)
+**Priority:** 🟡 MEDIUM - Packaging for distribution
+
+#### 4F.1: Bootable Image Structure
+
+```
+FAT32 image:
+  /EFI/BOOT/BOOTX64.EFI   # Kernel
+  /initrd.tar              # Initial ramdisk
+  /boot/config             # Kernel config
+```
+
+#### 4F.2: Update build-live-image.sh
+1. Build kernel
+2. Build userspace programs
+3. Create initrd with programs
+4. Package into bootable image
+
+#### 4F.3: Success Criteria
+- ✅ Boots from USB
+- ✅ Runs on real hardware
+- ✅ Shell is interactive
+- ✅ Basic commands work
+
+---
+
+### Phase 4G: Basic Installer (LOW - Week 6+)
+**Priority:** 🟢 LOW - Nice to have, not critical
+
+Defer this until Phase 4A-4E complete.
+
+---
+
+### Dependency Graph
+
+```
+Phase 4A (ELF Loader)
+    ↓
+Phase 4B (Syscalls) ← Must have 4A
+    ↓
+Phase 4C (Scheduler) ← Must have 4A + 4B
+    ↓
+Phase 4D (Initrd) ← Must have 4B (file syscalls)
+    ↓
+Phase 4E (Console) ← Can happen anytime after 4B
+    ↓
+Phase 4F (Live Image) ← Must have 4A-4D working
+    ↓
+Phase 4G (Installer) ← Needs everything
+```
+
+---
+
+### Success Criteria Summary
+
+| Phase | Success Criteria |
+|-------|-----------------|
+| **4A** | ELF loads, jumps to user mode, executes instruction |
+| **4B** | sys_write output, sys_mmap allocates, sys_exit works |
+| **4C** | Init runs, fork works, preemption works |
+| **4D** | Can exec programs from initrd, shell runs |
+| **4E** | Console displays output, can type and see echo |
+| **4F** | USB boots on real hardware, shell interactive |
+| **4G** | Can install to disk from live USB |
+
+---
+
+### Time Estimates
+
+| Phase | Effort | Duration |
+|-------|--------|----------|
+| 4A - ELF Loader | Medium | 1-2 weeks |
+| 4B - Syscalls | High | 1-2 weeks |
+| 4C - Scheduler | Medium | 1 week |
+| 4D - Initrd | Low | 3-5 days |
+| 4E - Console | Low | 3-5 days |
+| 4F - Live Image | Low | 2-3 days |
+| 4G - Installer | Medium | 1 week |
+| **Total** | | **6-8 weeks** |
+
+---
+
+### Risks & Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| ELF loader bugs | 🔴 Critical | Test with simple binaries first |
+| Syscall interface wrong | 🔴 Critical | Use Linux syscall ABI |
+| Context switch crashes | 🟠 High | Test scheduler in isolation |
+| Initrd format issues | 🟡 Medium | Use standard tar format |
+| Hardware compatibility | 🟡 Medium | Test in QEMU first |
+
+---
+
+### What NOT to Implement (Yet)
+
+Defer these until Phase 4A-4F complete:
+
+- ❌ Full VFS layer (use initrd only)
+- ❌ Disk drivers (boot from memory)
+- ❌ Network stack
+- ❌ GUI/Wayland
+- ❌ Package manager integration
+- ❌ Multi-user support
+- ❌ Security hardening
+- ❌ ARM64/RISC-V ports
+
+---
+
+### Quick Start: Week 1 Tasks
+
+Focus on **4A (ELF Loader)** first:
+
+1. Create `src/exec/elf.rs` module
+2. Implement ELF header parsing
+3. Create simple test binary: `hello.c`
+4. Load ELF into memory
+5. Jump to entry point
+6. **Celebrate first userspace instruction!** 🎉
+
+---
+
+## Part 15: Contact & Resources
 
 ### Key Locations
 
