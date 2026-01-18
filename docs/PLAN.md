@@ -1,9 +1,9 @@
 # Rustica OS - Kernel Integration Plan
 
 **Date:** 2025-01-18
-**Status:** Phase 4A - **Revised: Migration-first approach** (discovered old kernel has Phase 4 components)
-**Last Milestone:** CLI tool with QEMU integration ✅
-**Next Milestone:** Migrate mexec.S and test userspace transition
+**Status:** Phase 4A - **mexec.rs migrated, testing pending** ✅
+**Last Milestone:** mexec module ported to Rust (commit 1f08a5f)
+**Next Milestone:** Test mexec transition with userspace program
 
 ---
 
@@ -1122,6 +1122,56 @@ cp -r /var/www/rustux.com/prod/kernel/userspace/* \
 - Boot kernel with embedded userspace
 - Verify "hello" output appears
 - Verify syscalls work
+
+---
+
+### Migration Progress Update (2025-01-18)
+
+#### ✅ COMPLETED: mexec.rs Migration (Revised Phase 4A, Task 1-2)
+
+**Commit:** `1f08a5f` - "Add mexec module: Kernel to userspace transition"
+
+**What was done:**
+1. Ported `mexec.S` from old kernel to Rust using `naked_asm!` macro
+2. Created `src/arch/amd64/mexec.rs` with:
+   - `mexec_asm()` function - Core kernel→userspace transition
+   - `jump_to_userspace()` wrapper - Simplified interface
+   - Proper segment selector constants (USER_CS, USER_DS, etc.)
+3. Updated `src/arch/amd64/mod.rs` to include mexec module
+4. Module compiles successfully with the new kernel
+
+**Key differences from original:**
+- **No separate .S file**: Assembly is inline using `naked_asm!` macro
+- **Simplified GDT**: Minimal entries needed for transition (null, kernel code, kernel data, user code)
+- **No external includes**: All constants defined in Rust
+- **Cleaner interface**: `jump_to_userspace(entry, stack)` wrapper
+
+**Assembly sequence:**
+```rust
+1. cli                     // Disable interrupts
+2. and cr4, ~0x80          // Turn off PGE (Page Global Enable)
+3. lgdt [gdt_pointer]      // Load temporary GDT
+4. mov ds/es/ss, 0x23      // Switch to user data segments
+5. lret                    // Far jump to user code segment
+6. mov rsp, rdx            // Set user stack
+7. jmp rcx                 // Jump to userspace entry point
+```
+
+**GDT layout:**
+| Index | Selector | Description | Value |
+|-------|----------|-------------|-------|
+| 0 | 0x00 | Null entry | 0x0000000000000000 |
+| 1 | 0x08 | Kernel 64-bit code | 0x00AF9B000000FFFF |
+| 2 | 0x10 | Kernel data | 0x00CF93000000FFFF |
+| 3 | 0x18 | User 64-bit code | 0x00AFFB000000FFFF |
+
+**Next Steps (Revised Phase 4A, Task 3):**
+- ⏳ Create test kernel that calls `mexec_asm()`
+- ⏳ Build minimal userspace ELF that prints "Hello from userspace!"
+- ⏳ Test transition in QEMU
+- ⏳ Verify GDT switching and segment registers
+
+**Estimated time to complete Phase 4A:** 2-4 hours
 
 ---
 
