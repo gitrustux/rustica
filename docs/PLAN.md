@@ -576,6 +576,20 @@ If critical issues arise:
 | Process Creation | ❌ Untested | No scheduler started |
 | Memory Allocation | ❌ Untested | PMM not initialized |
 
+### ❌ Not Implemented (Current Limitations)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Userspace** | ❌ Not Implemented | No process execution, no ELF loader |
+| **Process Execution** | ❌ Not Implemented | Scheduler exists but not started |
+| **Filesystem** | ❌ Not Implemented | No VFS layer, no storage drivers |
+| **Installer** | ❌ Not Implemented | Kernel-only, no OS installer |
+| **Syscalls** | 🔶 Stub Only | 1 working (CLOCK_GET), 28 stubs |
+| **Network** | ❌ Not Implemented | No network stack |
+| **GUI** | ❌ Not Implemented | On hold until CLI complete |
+
+**Note:** The kernel is currently a bare microkernel that boots to runtime mode. Userspace CLI tools exist at `/var/www/rustux.com/prod/rustica/tools/cli/` but cannot run until process execution is implemented.
+
 ---
 
 ## Part 12: Success Criteria (Updated)
