@@ -1,9 +1,9 @@
 # Rustica OS - Kernel Integration Plan
 
 **Date:** 2025-01-18
-**Status:** Phase 3A Complete → Phase 4 (Userspace Foundation)
+**Status:** Phase 4A - **Revised: Migration-first approach** (discovered old kernel has Phase 4 components)
 **Last Milestone:** CLI tool with QEMU integration ✅
-**Next Milestone:** Phase 4A - ELF Loader implementation
+**Next Milestone:** Migrate mexec.S and test userspace transition
 
 ---
 
