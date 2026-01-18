@@ -990,6 +990,141 @@ Focus on **4A (ELF Loader)** first:
 
 ---
 
+## Part 16: Old Kernel Migration Repository
+
+**Location:** `/var/www/rustux.com/prod/kernel/` (deprecated)
+
+### Discovery: Phase 4 Components Already Exist!
+
+While starting Phase 4A (ELF Loader), I discovered that the **old kernel repository at `/var/www/rustux.com/prod/kernel/` already contains most of the Phase 4 components from a previous implementation effort**.
+
+### Available Components in Old Kernel
+
+| Component | Old Location | Lines | Status | Migrate Priority |
+|-----------|--------------|-------|--------|-----------------|
+| **mexec.S** | `src/kernel/arch/amd64/mexec.S` | ~150 | ✅ Complete | 🔴 CRITICAL - Needed for Phase 4A |
+| **Userspace** | `userspace/` directory | ~20+ files | ✅ Working | 🔴 HIGH - Needed for Phase 4D |
+| **libc-rx** | `userspace/crt/libc-rx/` | ~5000+ lines | ✅ Complete | 🔴 HIGH - Needed for Phase 4D |
+| **Process** | `src/kernel/src/kernel/process/mod.rs` | ~6000+ lines | ✅ Complete | 🟠 MEDIUM - Phase 4C |
+| **Embed Script** | `embed_userspace.sh` | Shell script | ✅ Working | 🟡 MEDIUM - Phase 4F |
+
+### Critical Discovery: mexec.S
+
+**What it is:** Assembly code that transitions from kernel mode to userspace mode
+
+**Key features:**
+- Disables interrupts and switches to safe page tables
+- Loads new GDT and sets up segment registers
+- Performs memory copy operations to load kernel data
+- Jumps to userspace entry point
+
+**Why it's critical:** Without this, no userspace code can execute.
+
+### Userspace Components Available
+
+**Complete userspace C library:**
+- `crt/` - C runtime startup code
+- `libc-rx/` - C standard library (printf, file I/O, etc.)
+- `libipc/` - IPC library for inter-process communication
+- `libsys/` - System library (process/thread operations)
+- `librt/` - Runtime library
+- `linker.ld` - ELF linker script
+
+**Working test program:**
+- `src/main.rs` - "hello world" program that uses Rustux syscalls
+- Uses SYS_WRITE (syscall number 1) - console output
+- Uses SYS_READ (syscall number 2) - console input
+- Uses SYS_EXIT (syscall number 60) - process termination
+
+### Old Kernel Directory Structure
+
+```
+/var/www/rustux.com/prod/kernel/
+├── src/kernel/
+│   ├── process/         # Process management (~6000 lines of Rust/C++)
+│   ├── arch/amd64/
+│   │   └── mexec.S     # Userspace entry point (~150 lines of assembly)
+│   ├── vm/
+│   │   ├── vmm.cpp        # Virtual memory manager
+│   │   ├── vm_object.cpp   # VMO implementation
+│   │   └── vmm_mapping.cpp # VMAR implementation
+│   └── object/
+│       └── process_dispatcher.cpp  # Process creation/spawning
+├── userspace/           # Complete userspace environment
+│   ├── crt/              # C runtime startup code
+│   ├── libc-rx/          # C standard library
+│   ├── libsys/           # System library
+│   ├── libipc/           # IPC library
+│   ├── librt/            # Runtime library
+│   ├── src/main.rs        # Test userspace program
+│   └── linker.ld         # ELF linker script
+└── scripts/
+    └── embed_userspace.sh  # Embed userspace into kernel
+```
+
+---
+
+### Migration Tasks for Phase 4
+
+With these components available, Phase 4 should be revised to **migration-first approach**:
+
+#### Revised Phase 4A: Migrate Userspace Entry (CRITICAL - 1-2 days)
+
+**Task 1: Copy mexec.S**
+```bash
+cp /var/www/rustux.com/prod/kernel/src/kernel/arch/amd64/mexec.S \
+   /var/www/rustux.com/prod/rustux/src/arch/amd64/mexec.S
+```
+
+**Task 2: Update mexec.S for new kernel structure**
+- Update include paths
+- Update any hardcoded addresses
+- Adapt to new GDT/location
+
+**Task 3: Test mexec transition**
+- Create stub kernel that calls mexec with a test userspace program
+- Verify GDT switching works
+- Verify userspace entry point is reached
+
+#### Revised Phase 4B: Migrate Process Management (MEDIUM - 2-3 days)
+
+**Task 1: Copy process code**
+```bash
+cp /var/www/rustux.com/prod/kernel/src/kernel/src/kernel/process/mod.rs \
+   /var/www/rustux.com/prod/rustux/src/process/process.rs
+```
+
+**Task 2: Adapt to new codebase**
+- Update import paths
+- Update syscall numbers to match new kernel syscall ABI
+- Remove Zircon dependencies (use Rustux objects instead)
+
+#### Revised Phase 4C: Migrate Userspace Environment (HIGH - 3-4 days)
+
+**Task 1: Copy userspace libraries**
+```bash
+cp -r /var/www/rustux.com/prod/kernel/userspace/* \
+   /var/www/rustux.com/prod/rustica/userspace/
+```
+
+**Task 2: Update userspace build**
+- Update Cargo.toml for new kernel syscalls
+- Update linker script for new addresses
+- Rebuild with new syscall numbers
+
+#### Revised Phase 4D: Integrate and Test (HIGH - 1 week)
+
+**Task 1: Update embed_userspace.sh**
+- Point to new kernel location
+- Adjust for new VMO-based address space
+
+**Task 2: Test in QEMU**
+- Boot kernel with embedded userspace
+- Verify "hello" output appears
+- Verify syscalls work
+
+---
+
 ## Part 15: Contact & Resources
 
 ### Key Locations
