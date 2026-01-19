@@ -1,9 +1,9 @@
 # Rustica OS - Kernel Integration Plan
 
 **Date:** 2025-01-18
-**Status:** Phase 4A - **mexec.rs migrated, testing pending** ✅
-**Last Milestone:** mexec module ported to Rust (commit 1f08a5f)
-**Next Milestone:** Test mexec transition with userspace program
+**Status:** Phase 4A - **Userspace test program ready** ✅
+**Last Milestone:** Userspace test program built (commit 98861fe)
+**Next Milestone:** Integrate mexec with userspace test and boot in QEMU
 
 ---
 
@@ -1172,6 +1172,53 @@ cp -r /var/www/rustux.com/prod/kernel/userspace/* \
 - ⏳ Verify GDT switching and segment registers
 
 **Estimated time to complete Phase 4A:** 2-4 hours
+
+---
+
+#### ✅ COMPLETED: Userspace Test Program (Revised Phase 4A, Task 3)
+
+**Commit:** `98861fe` - "Add userspace test program for mexec transition"
+
+**What was done:**
+1. Created minimal userspace test program at `userspace/test/src/main.rs`
+2. Custom linker script (`userspace/test/linker.ld`) for x86_64-unknown-none target
+3. Build script (`userspace/test/build.sh`) for compilation
+4. Program builds successfully and is ready for testing
+
+**Program features:**
+- **Entry point**: `_start()` at 0x10005a (code loads at 0x100000)
+- **Stack**: 1MB stack at 0x800000
+- **Output**: Writes to debug console port (0xE9)
+- **Message**: "Hello from userspace!" followed by CPL (current privilege level)
+- **Behavior**: Infinite `hlt` loop (no syscalls available yet)
+
+**ELF layout:**
+| Segment | Virtual Address | Size | Flags |
+|---------|-----------------|------|-------|
+| .text | 0x100000 | 0x7B | R E |
+| .data | 0x900000 | 0xA0 | RW |
+| .stack | 0x800000 | 1MB | RW |
+
+**Build output:**
+- `target/x86_64-unknown-none/release/rustux-userspace-test` - ELF executable
+- `userspace-test.bin` - Raw binary (8.1MB due to stack reservation)
+
+**String verification:**
+```bash
+$ hexdump -C userspace-test.bin | grep -A2 "Hello"
+00000090  66 72 6f 6d 20 75 73 65  72 73 70 61 63 65 21 0a  |from userspace!.|
+000000a0  52 75 6e 6e 69 6e 67 20  61 74 20 43 50 4c 20 0a  |Running at CPL .|
+```
+
+**Next Steps:**
+- ⏳ Embed userspace binary into kernel
+- ⏳ Create kernel function to load and execute userspace via mexec
+- ⏳ Test in QEMU and verify output
+
+**Remaining work for Phase 4A:**
+1. Create ELF loader or embed raw binary
+2. Add userspace execution test to kernel
+3. Boot in QEMU and verify "Hello from userspace!" appears
 
 ---
 
