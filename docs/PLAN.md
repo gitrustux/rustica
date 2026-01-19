@@ -1,9 +1,9 @@
 # Rustica OS - Kernel Integration Plan
 
 **Date:** 2025-01-18
-**Status:** Phase 4A - **Userspace test program ready** ✅
-**Last Milestone:** Userspace test program built (commit 98861fe)
-**Next Milestone:** Integrate mexec with userspace test and boot in QEMU
+**Status:** Phase 4A - **ELF loader and mexec integration complete** ✅
+**Last Milestone:** Userspace test integrated into kernel (commits 647d56e, 908e804)
+**Next Milestone:** Test in QEMU and verify "Hello from userspace!" output
 
 ---
 
@@ -1216,7 +1216,83 @@ $ hexdump -C userspace-test.bin | grep -A2 "Hello"
 - ⏳ Test in QEMU and verify output
 
 **Remaining work for Phase 4A:**
-1. Create ELF loader or embed raw binary
+1. Create ELF loader or embed raw binary → ✅ **DONE** (commit 647d56e)
+2. Integrate userspace test into kernel → ✅ **DONE** (commit 908e804)
+3. Test in QEMU → ⏳ **PENDING** (QEMU launches but output capture needed)
+
+---
+
+#### ✅ COMPLETED: ELF Loader Fixes (commit 647d56e)
+
+**What was done:**
+1. Fixed existing ELF loader in `src/exec/elf.rs`
+2. Added missing `alloc::vec::Vec` import
+3. Fixed ELF_MAGIC constant type (`[u8; 4]` instead of `&[u8; 4]`)
+4. Fixed e_ident array initialization
+5. Fixed from_le_bytes array sizes for program headers
+6. Fixed Vmo::create parameter type (usize instead of u64)
+7. Created elf_flags_to_vmo_flags() helper function
+
+**ELF loader now provides:**
+- `parse_elf_header()` - Parse ELF header from raw data
+- `parse_program_headers()` - Parse program headers
+- `validate_elf_header()` - Validate ELF for x86_64
+- `load_elf()` - Load ELF and create VMOs for each segment
+- `is_elf_file()` - Check if data is valid ELF
+
+**Status:** ELF loader compiles successfully and is ready for use.
+
+---
+
+#### ✅ COMPLETED: mexec Simplification and Integration (commit 647d56e)
+
+**What was done:**
+1. Simplified mexec implementation in `src/arch/amd64/mexec.rs`
+2. Removed problematic `naked_asm!` macro (attribute issues)
+3. Implemented mexec using `core::arch::asm!` with `noreturn` option
+4. Fixed mexec_asm() and jump_to_userspace() functions
+
+**Simplified mexec sequence:**
+```rust
+// Disable interrupts
+cli
+
+// Set up user stack
+mov rsp, {stack}
+
+// Jump to userspace entry point
+jmp {entry}
+```
+
+**Status:** mexec compiles successfully and is ready for testing.
+
+---
+
+#### ✅ COMPLETED: Userspace Test Integration (commit 908e804)
+
+**What was done:**
+1. Created userspace test module at `src/exec/userspace_test.rs`
+2. Implemented `execute_userspace_test()` - Embeds binary and executes via mexec
+3. Implemented `test_mexec_minimal()` - Simple test without embedded binary
+4. Added debug output to port 0xE9 (QEMU debugcon)
+5. Added `userspace_test` feature flag to Cargo.toml
+6. Embedded userspace binary (8.1MB) at `src/exec/userspace-test.bin`
+7. Integrated into `init_late()` for automatic execution
+
+**Features:**
+- Kernel prints debug messages via port 0xE9
+- Automatically executes userspace test during init
+- Userspace binary loads at 0x100000 with stack at 0x800000
+- Prints "Hello from userspace!" and CPL when successful
+
+**Build command:**
+```bash
+cargo build --release --bin rustux --features uefi_kernel,userspace_test --target x86_64-unknown-uefi
+```
+
+**Status:** Kernel with userspace test compiles successfully. QEMU boots but output capture needs to be verified.
+
+---
 2. Add userspace execution test to kernel
 3. Boot in QEMU and verify "Hello from userspace!" appears
 
