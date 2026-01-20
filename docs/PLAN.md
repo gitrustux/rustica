@@ -1,8 +1,8 @@
 # Rustica OS - Development Plan
 
-**Last Updated:** 2025-01-19 - VMO#0 len=0 resolved (stack corruption)
+**Last Updated:** 2025-01-20 - Stack overflow confirmed, linker flag approach unreliable
 **Current Focus:** Phase 4A - Userspace Execution
-**Strategy:** Two-phase PMM replacement (see below)
+**Strategy:** Implement proper kernel stack switch OR minimal ELF-bypass test
 **Kernel Location:** `/var/www/rustux.com/prod/rustux/`
 
 ---
@@ -292,28 +292,109 @@ This is exactly where real kernels hit the "debugger becomes the bug" phase.
 
 ## 📋 Phase 4: Userspace & Process Execution
 
-### 4A. ELF Loading & Address Space ⏳ IN PROGRESS
+### 4A. ELF Loading & Address Space ⏳ IN PROGRESS (2025-01-20)
 
 **Current Status:**
-- ✅ All 3 ELF segments load correctly without corruption
-- ✅ VMO write operations succeed
-- ✅ VMO identity mismatch RESOLVED (was stack corruption)
-- ⚠️ Debug output still causes minor corruption - needs cleanup
+- ⚠️ **BLOCKER:** LoadedSegment corruption during ELF loading
+- ✅ All 3 ELF segments create VMOs successfully (allocated at 0x1000000, 0x1001000, 0x1002000)
+- ✅ VMO write operations complete
+- ⚠️ Address space creation starts but fails during segment mapping
 
-**Completed:**
+**Completed (2025-01-20 session):**
+- ✅ Removed verbose debug output from address_space.rs (minimal-debug strategy)
+- ✅ Fixed VMO clone stack overflow (replaced 4KB buffer with 256-byte chunks)
+- ✅ Skipped VMO cloning in map_vmo to avoid corruption
+- ✅ Identified root cause: **Stack overflow during deep call chains**
+
+### 🔴 Stack Overflow Investigation (2025-01-20)
+
+**Evidence Pattern:**
+
+Multiple independent signals pointing to stack overflow:
+
+1. **Corruption Location:** During ELF loading (deep call chains)
+   - `process_loader → load_elf → parse_phdrs → create_vmo → pmm_alloc → heap_alloc → BTreeMap_insert`
+
+2. **Corruption Pattern:** `vaddr` (offset 0) → overwritten with `flags` (offset 24)
+   - Value 0x3 = PF_R | PF_W flags exactly
+   - Deterministic field overwrite at consistent offset
+   - Same struct fields, same offsets every time
+
+3. **Stack Pressure Reduction Reduced Corruption:**
+   - 4KB stack buffer → corruption
+   - 256B chunked buffer → less corruption
+   - Debug output (stack buffers + asm) → corruption
+   - Removing debug output → reduced but not eliminated
+
+4. **Not Heap Allocator Bug (evidence against):**
+   - Heap bugs typically show: double free, bad coalescing, use-after-free, random corruption
+   - We're seeing: deterministic field overwrite, same offsets, happens during deep operations
+   - This pattern is **textbook early-kernel stack overflow**
+
+**Test Results with Increased Stack Size:**
+
+| Stack Size | Corruption Pattern | Analysis |
+|-----------|-------------------|----------|
+| 64KB (0x10000) | vaddr=0x3 | Flags value (PF_R \| PF_W) |
+| 128KB (0x20000) | vaddr=0x300028 | Heap address (0x300000) + offset |
+| +Box<LoadedElf> | vaddr=0x300028 | Heap corruption continues |
+
+**Key Finding:** The changing corruption pattern suggests the stack size increase helps but **doesn't fully resolve the issue**. The linker flag approach (`-C link-arg=-stack:0x20000`) may not be reliably honored by UEFI firmware.
+
+**Root Cause:** Stack overflow during deep call chains between process_loader, VMO operations, and heap allocations. The LoadedSegment struct on the stack gets overwritten by adjacent data.
+
+**Recommended Execution Order:**
+
+#### Step 1: Proper Kernel Stack Switch (RECOMMENDED) ✅ NEXT STEP
+- **Problem:** Linker flag approach for UEFI stack size is unreliable
+- **Solution:** Implement actual stack switch to dynamically allocated kernel stack
+- **Why:** Eliminates dependency on UEFI firmware stack size
+- **Implementation:**
+  1. Allocate kernel stack pages (already done in `init_kernel_stack()`)
+  2. Add assembly function to switch RSP to new stack
+  3. Call early in boot before deep call chains
+
+#### Step 2: Minimal Userspace Test - ELF Bypass (ALTERNATIVE)
+- Hardcode: One VMO, one page, one mapping
+- Jump to stub userspace loop
+- Provides: Proof that VMOs + address space + context switch work
+- Isolates: From ELF complexity, gives known-good baseline
+- **Use this if:** Stack switch implementation is blocked
+
+#### Step 3: Heap Allocator Investigation (ONLY IF NEEDED)
+- If corruption persists after proper stack switch → then audit heap
+- Add: Redzones, canaries, instrument alloc/free paths
+- Do NOT do this until stack overflow is eliminated
+
+**Why This Approach:**
+- Eliminates primary suspect (stack overflow) before complex surgery
+- Builds on stable foundation instead of debugging on unstable ground
+- Mirrors how real kernels evolve (Linux did exactly this)
+- Avoids weeks of unnecessary pain if stack was the issue all along
+
+**Key Files to Modify:**
+- `src/arch/amd64/init.rs` - Add stack switch assembly function
+- `src/init.rs` - Call stack switch early in boot
+- `src/exec/userspace_exec_test.rs` - Alternative: Add minimal test variant
+
+---
+
+### Previous Status (2025-01-19) - DEPRECATED
+
+**Remaining Tasks (OBSOLETE - superseded by stack overflow fix):**
+1. ⏳ Remove verbose debug output to eliminate residual corruption
+2. ⏳ Complete segment mapping
+3. ⏳ Map user stack
+4. ⏳ Execute userspace transition via IRETQ
+5. ⏳ Verify "Hello from userspace!" output
+
+**Completed (2025-01-19):**
 - ✅ ELF loader fully implemented and tested
 - ✅ Address space framework complete with page table management
 - ✅ Process loader ties ELF loading with address space creation
 - ✅ Userspace entry point via IRETQ implemented
 - ✅ Test infrastructure ready
 - ✅ VMO stack corruption fixed (Box::new timing, reduced BSS allocation)
-
-**Remaining Tasks:**
-1. ⏳ Remove verbose debug output to eliminate residual corruption
-2. ⏳ Complete segment mapping
-3. ⏳ Map user stack
-4. ⏳ Execute userspace transition via IRETQ
-5. ⏳ Verify "Hello from userspace!" output
 
 **Key Files:**
 - `src/exec/elf.rs` - ELF parser (490 lines)
