@@ -1,9 +1,45 @@
 # Rustica OS - Development Plan
 
-**Last Updated:** 2025-01-20 - Stack overflow confirmed, linker flag approach unreliable
+**Last Updated:** 2025-01-20 - UEFI/QEMU Environment Fully Resolved ✅
 **Current Focus:** Phase 4A - Userspace Execution
-**Strategy:** Implement proper kernel stack switch OR minimal ELF-bypass test
+**Strategy:** Heap allocator fixes completed, validation and parallel work
 **Kernel Location:** `/var/www/rustux.com/prod/rustux/`
+
+---
+
+## ✅ UEFI/QEMU Environment - RESOLVED (2025-01-20)
+
+**Issue:** System's OVMF firmware files were corrupted (all zeros), QEMU 8.2.2 had compatibility issues
+
+**Resolution:**
+- Purged and reinstalled `ovf` package
+- Fixed OVMF firmware corruption - files now have valid _FVH signatures
+- Found working QEMU configuration: `-machine pc,accel=tcg` (not q35)
+- Added `-machine acpi=off,hpet=off` to avoid QEMU mutex crashes
+
+**Verified Working Configuration:**
+```bash
+qemu-system-x86_64 \
+  -bios /usr/share/ovmf/OVMF.fd \
+  -drive file=image.img,format=raw \
+  -nographic \
+  -m 512M \
+  -machine type=pc,accel=tcg \
+  -machine acpi=off,hpet=off
+```
+
+**Architecture-Specific Firmware Requirements:**
+| Architecture | Firmware | Notes |
+|--------------|----------|-------|
+| **amd64** | `/usr/share/ovmf/OVMF.fd` | EDK2 UEFI firmware (verified working) |
+| **arm64** | EDK2 AArch64 firmware | Different package: `edk2-arm64` or QEMU's `-bios` parameter |
+| **riscv64** | OpenSBI | Uses OpenSBI as firmware, not UEFI |
+
+**Key Learnings:**
+- UEFI loader is correct ✅
+- Boot path is real, not emulator artifact ✅
+- Previous crashes were environmental, not kernel logic ✅
+- Nothing UEFI-related needs to be revisited for amd64 ✅
 
 ---
 
@@ -71,13 +107,52 @@
 
 ---
 
-## 🔴 Current Blocker: PMM Single-Page Bug (HOLD)
+## 🟡 Heap Allocator - Fixes Implemented, Validation Pending (2025-01-20)
+
+**Status:** Critical bugs fixed, validation tests needed
+
+**Issues Fixed:**
+1. **Block Splitting Bug** ✅ FIXED:
+   - Original block's size was not being updated after split
+   - Fix: `(*current).size = offset + size` (only when split confirmed)
+   - This prevents allocator from re-finding the same block
+
+2. **Broken LAST_ALLOCATED Check** ✅ REMOVED:
+   - Check was too aggressive, preventing valid allocations
+   - `alloc_size` used block size (16MB) instead of allocation size
+   - Caused false "overlap" detection
+
+3. **Kernel Stack Switch** ✅ COMPLETE:
+   - 256KB (64 pages) from PMM kernel zone
+   - Non-returning jump to continuation
+   - Prevents stack overflow on UEFI's 4-8KB firmware stack
+
+**Remaining Work:**
+- **Validation**: Run ELF loader multiple times to confirm no vaddr corruption
+- **Free-Block Coalescing** (optional but recommended): Deallocation may not properly merge adjacent free blocks
+- **Allocator Invariants** (recommended):
+  ```rust
+  assert!(block.size >= HEADER_SIZE);
+  assert!(!overlapping_blocks());
+  ```
+
+### Validation Steps
+
+1. Allocate/free in a loop (stress test)
+2. Run ELF loader multiple times without reboot
+3. Confirm vaddr values are correct (not 0x300028 corruption)
+
+**Current Commit:** `4668ecc` - "Fix heap allocator block splitting and remove broken LAST_ALLOCATED check"
+
+---
+
+## 🔴 PMM Single-Page Bug (RESOLVED - Superseded by Vec PMM)
 
 **Status:** Superseded by two-phase strategy
 
 **Original Issue:** Bitmap allocator only allocates 1 page before failing.
 
-**Resolution:** Don't fix the bitmap allocator yet. Replace it with simpler Vec-based allocator first.
+**Resolution:** Replaced with Vec-based allocator (Phase A complete).
 
 **Root Cause:** Jumped to complex allocator without proving simpler approach works.
 
