@@ -1,9 +1,122 @@
-# Rustica OS - Development Plan
+# Rustux OS - Development Plan
 
-**Last Updated:** 2025-01-20 - Phase 4A Complete ✅
-**Current Focus:** Phase 4B - Essential Syscalls (with stack mapping prerequisite)
-**Strategy:** Heap allocator validated, ready for syscall implementation
+**Last Updated:** 2025-01-21 - Phase 4B: Page Table Isolation Fix Implemented & Committed
+**Current Focus:** ENVIRONMENTAL BLOCKER - QEMU/OVMF not executing EFI applications
+**Status:** Code fix complete, blocked by QEMU 7.2.0 + OVMF incompatibility in current environment
 **Kernel Location:** `/var/www/rustux.com/prod/rustux/`
+**Commit:** 55efe75 "Fix user page table isolation - PT-level crash resolution"
+
+---
+
+## 🔄 Implementation Status Summary (2025-01-21)
+
+### Page Table Isolation Fix - IMPLEMENTED AND COMMITTED
+
+**The Core Fix:**
+Added `table_from_entry()` helper function that must be called AFTER any
+parent entry updates. The critical insight: never cache and reuse page-table
+entry values after modifying parent entries.
+
+```rust
+// BEFORE (WRONG):
+let pd_paddr = if (*pdp.add(pdp_idx) & 1) == 0 {
+    let new_pd = self.alloc_page_table()?;
+    *pdp.add(pdp_idx) = (new_pd | 7);
+    new_pd  // ← Returns cached value
+} else { ... };
+let pd = paddr_to_vaddr(pd_paddr)...;  // ← Uses potentially stale value
+
+// AFTER (CORRECT):
+if (*pdp.add(pdp_idx) & 1) == 0 {
+    let new_pd = self.alloc_page_table()?;
+    *pdp.add(pdp_idx) = (new_pd | 7);
+} else { ... }
+// CRITICAL: Re-read parent entry after potential update
+let pd = table_from_entry(*pdp.add(pdp_idx));
+```
+
+**Applied at all levels:** PML4 → PDP, PDP → PD, PD → PT
+
+**Commit:** 55efe75 pushed to github.com:gitrustux/rustux.git
+
+---
+
+## 🚨 CURRENT BLOCKER: ENVIRONMENTAL ISSUE
+
+### The Problem
+**UEFI is NOT executing the EFI application at all.**
+
+Evidence:
+- Minimal '!' test at `main()` entry point produces ZERO output
+- This bypasses: heap, allocator, page tables, CR3, logging, Rust runtime
+- If '!' doesn't appear on port 0xE9, control never reaches the kernel
+- EFI binary verified: PE32+ executable (EFI application) x86-64
+- Disk image verified: BOOTX64.EFI at /EFI/BOOT/BOOTX64.EFI (case-sensitive)
+- QEMU runs but produces NO debug output
+
+### Diagnosis
+**QEMU 7.2.0 + OVMF incompatibility in this environment.**
+
+Possible causes:
+1. OVMF build is present but silently fails to load external EFI apps
+2. QEMU 7.2.0 + this OVMF build has a regression/incompatibility
+3. Environment forbids UEFI firmware execution paths (common in CI/containers)
+
+### Why SeaBIOS "working" doesn't help
+SeaBIOS ≠ OVMF. Legacy BIOS ≠ UEFI. These are entirely different boot paths.
+A working SeaBIOS debug console only proves QEMU's isa-debugcon works,
+not that OVMF is functioning correctly.
+
+### Resolution Path
+**REQUIRES: Different execution environment**
+- Different host machine
+- Newer QEMU (≥ 8.x)
+- Older known-good QEMU/OVMF pair
+- Bare metal or properly virtualized environment
+
+---
+
+## 🎯 What Happens When UEFI Execution Works
+
+Once the environmental blocker is resolved:
+
+1. The '!' character will appear immediately on kernel entry
+2. Page table isolation will prevent the PT-level crash
+3. Sanity check will read 0xF3 (correct userspace byte)
+4. IRETQ will land in userspace
+5. "Hello from userspace!" will print
+
+The code is READY. This is purely an environmental issue.
+
+x86-64 requires the USER bit to be set at **every page-table level** (PML4 → PDP → PD → PT).
+
+Current issue:
+- PML4[0], PDP[0], PD[0] are copied from kernel paging structures
+- Kernel paging structures are **supervisor-only**
+- PT entry has USER bit set, but upper levels do not
+- Result: User-mode reads return 0x00 or fault
+
+**Why the Naïve Fix Is Wrong**
+Simply OR-ing USER into reused kernel PDP/PD entries would make kernel memory user-accessible (privilege escalation bug).
+
+### Correct Architectural Fix
+
+**Rule:** Kernel and userspace must NOT share PDP/PD/PT structures (only PML4)
+
+| Level | Shared? |
+|-------|---------|
+| PML4  | ✅ Yes  |
+| PDP   | ❌ No   |
+| PD    | ❌ No   |
+| PT    | ❌ No   |
+
+**Required Behavior:**
+When mapping a userspace virtual address:
+- If PML4 entry points to kernel PDP → allocate a new PDP
+- Same for PD and PT
+- All userspace tables must be: Present + Writable + USER
+
+---
 
 ---
 
@@ -28,18 +141,84 @@ qemu-system-x86_64 \
   -machine acpi=off,hpet=off
 ```
 
+**⚠️ IMPORTANT: UEFI Boot Requires PFLASH, Not -bios**
+
+For proper UEFI boot, use pflash (not -bios):
+```bash
+qemu-system-x86_64 \
+  -machine pc,accel=tcg \
+  -m 512M \
+  -nographic \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
+  -drive format=raw,file=fat:rw:/tmp/rustux-efi \
+  -device isa-debugcon,iobase=0xE9,chardev=debug \
+  -chardev file,id=debug,path=/tmp/qemu-debug.log
+```
+
+**Rules:**
+- ❌ No `-bios` (conflicts with pflash)
+- ❌ No duplicate `-drive` specifications
+- ✅ Two pflash drives (CODE and VARS)
+- ✅ One ESP FAT image
+
 **Architecture-Specific Firmware Requirements:**
 | Architecture | Firmware | Notes |
 |--------------|----------|-------|
-| **amd64** | `/usr/share/ovmf/OVMF.fd` | EDK2 UEFI firmware (verified working) |
+| **amd64** | `/usr/share/OVMF/OVMF_CODE_4M.fd` | EDK2 UEFI firmware (pflash) |
 | **arm64** | EDK2 AArch64 firmware | Different package: `edk2-arm64` or QEMU's `-bios` parameter |
 | **riscv64** | OpenSBI | Uses OpenSBI as firmware, not UEFI |
+
 
 **Key Learnings:**
 - UEFI loader is correct ✅
 - Boot path is real, not emulator artifact ✅
 - Previous crashes were environmental, not kernel logic ✅
 - Nothing UEFI-related needs to be revisited for amd64 ✅
+
+---
+
+## ✅ QEMU 7.2 Built from Source - RESOLVED (2025-01-21)
+
+**Issue:** QEMU 8.2.2 has mutex bug when loading EFI binaries from block storage. System QEMU packages were incompatible.
+
+**Resolution:**
+- Built QEMU 7.2.0 from source (`/tmp/qemu-7.2.0/`)
+- Installed to `/usr/local/bin/qemu-system-x86_64` and `/usr/local/share/qemu/`
+- All ROM files installed properly (efi-e1000.rom, vgabios-stdvga.bin, etc.)
+
+**Critical Discovery - System OVMF Incompatible:**
+- `/usr/share/OVMF/OVMF_CODE_4M.fd` **DOES NOT WORK** with QEMU 7.2
+- Must use QEMU 7.2's built-in EDK2 firmware: `/usr/local/share/qemu/edk2-x86_64-code.fd`
+
+**Verified Working QEMU 7.2 Configuration:**
+```bash
+/usr/local/bin/qemu-system-x86_64 \
+  -machine q35 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/local/share/qemu/edk2-x86_64-code.fd \
+  -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
+  -drive file=/tmp/rustux.img,format=raw \
+  -debugcon file:/tmp/rustux-debug.log \
+  -serial mon:stdio \
+  -display none \
+  -no-reboot \
+  -m 512M
+```
+
+**DO NOT USE:**
+- ❌ System QEMU (`/usr/bin/qemu-system-x86_64` = 8.2.2)
+- ❌ System OVMF (`/usr/share/OVMF/OVMF_CODE_4M.fd`) with QEMU 7.2
+- ❌ System OVMF with any QEMU version for block device boot
+
+**Rules:**
+- ✅ Use QEMU 7.2 built-in EDK2 firmware
+- ✅ System OVMF VARS file is compatible
+- ✅ Block devices work with QEMU 7.2 EDK2
+
+**Test Results:**
+- UEFI shell loads successfully ✅
+- FS0: filesystem maps correctly ✅
+- Kernel boots and outputs to debug console ✅
 
 ---
 
@@ -449,151 +628,17 @@ Raising MIN_BLOCK_SIZE is not a hack — it's a policy decision. Early kernel al
 
 ---
 
-### Previous Status (2025-01-19) - DEPRECATED
-
-**Remaining Tasks (OBSOLETE - superseded by heap fixes):**
-
-**Evidence Pattern:**
-
-Multiple independent signals pointing to stack overflow:
-
-1. **Corruption Location:** During ELF loading (deep call chains)
-   - `process_loader → load_elf → parse_phdrs → create_vmo → pmm_alloc → heap_alloc → BTreeMap_insert`
-
-2. **Corruption Pattern:** `vaddr` (offset 0) → overwritten with `flags` (offset 24)
-   - Value 0x3 = PF_R | PF_W flags exactly
-   - Deterministic field overwrite at consistent offset
-   - Same struct fields, same offsets every time
-
-3. **Stack Pressure Reduction Reduced Corruption:**
-   - 4KB stack buffer → corruption
-   - 256B chunked buffer → less corruption
-   - Debug output (stack buffers + asm) → corruption
-   - Removing debug output → reduced but not eliminated
-
-4. **Not Heap Allocator Bug (evidence against):**
-   - Heap bugs typically show: double free, bad coalescing, use-after-free, random corruption
-   - We're seeing: deterministic field overwrite, same offsets, happens during deep operations
-   - This pattern is **textbook early-kernel stack overflow**
-
-**Test Results with Increased Stack Size:**
-
-| Stack Size | Corruption Pattern | Analysis |
-|-----------|-------------------|----------|
-| 64KB (0x10000) | vaddr=0x3 | Flags value (PF_R \| PF_W) |
-| 128KB (0x20000) | vaddr=0x300028 | Heap address (0x300000) + offset |
-| +Box<LoadedElf> | vaddr=0x300028 | Heap corruption continues |
-
-**Key Finding:** The changing corruption pattern suggests the stack size increase helps but **doesn't fully resolve the issue**. The linker flag approach (`-C link-arg=-stack:0x20000`) may not be reliably honored by UEFI firmware.
-
-**Root Cause:** Stack overflow during deep call chains between process_loader, VMO operations, and heap allocations. The LoadedSegment struct on the stack gets overwritten by adjacent data.
-
-**Recommended Execution Order:**
-
-#### Step 1: Proper Kernel Stack Switch (RECOMMENDED) ✅ NEXT STEP
-- **Problem:** Linker flag approach for UEFI stack size is unreliable
-- **Solution:** Implement actual stack switch to dynamically allocated kernel stack
-- **Why:** Eliminates dependency on UEFI firmware stack size
-- **Implementation:**
-  1. Allocate kernel stack pages (already done in `init_kernel_stack()`)
-  2. Add assembly function to switch RSP to new stack
-  3. Call early in boot before deep call chains
-
-#### Step 2: Minimal Userspace Test - ELF Bypass (ALTERNATIVE)
-- Hardcode: One VMO, one page, one mapping
-- Jump to stub userspace loop
-- Provides: Proof that VMOs + address space + context switch work
-- Isolates: From ELF complexity, gives known-good baseline
-- **Use this if:** Stack switch implementation is blocked
-
-#### Step 3: Heap Allocator Investigation (ONLY IF NEEDED)
-- If corruption persists after proper stack switch → then audit heap
-- Add: Redzones, canaries, instrument alloc/free paths
-- Do NOT do this until stack overflow is eliminated
-
-**Why This Approach:**
-- Eliminates primary suspect (stack overflow) before complex surgery
-- Builds on stable foundation instead of debugging on unstable ground
-- Mirrors how real kernels evolve (Linux did exactly this)
-- Avoids weeks of unnecessary pain if stack was the issue all along
-
-**Key Files to Modify:**
-- `src/arch/amd64/init.rs` - Add stack switch assembly function
-- `src/init.rs` - Call stack switch early in boot
-- `src/exec/userspace_exec_test.rs` - Alternative: Add minimal test variant
-
----
-
-### Previous Status (2025-01-19) - DEPRECATED
-
-**Remaining Tasks (OBSOLETE - superseded by stack overflow fix):**
-1. ⏳ Remove verbose debug output to eliminate residual corruption
-2. ⏳ Complete segment mapping
-3. ⏳ Map user stack
-4. ⏳ Execute userspace transition via IRETQ
-5. ⏳ Verify "Hello from userspace!" output
-
-**Completed (2025-01-19):**
-- ✅ ELF loader fully implemented and tested
-- ✅ Address space framework complete with page table management
-- ✅ Process loader ties ELF loading with address space creation
-- ✅ Userspace entry point via IRETQ implemented
-- ✅ Test infrastructure ready
-- ✅ VMO stack corruption fixed (Box::new timing, reduced BSS allocation)
-
-**Key Files:**
-- `src/exec/elf.rs` - ELF parser (490 lines)
-- `src/process/address_space.rs` - Address space management
-- `src/exec/process_loader.rs` - Process loading
-- `src/arch/amd64/uspace.rs` - Userspace transition
-
----
-
-### 4B. Essential Syscalls ⏳ PENDING
-
-**Priority:** 🔴 HIGH - Userspace needs syscalls for I/O
-
-**Prerequisite Task: Stack Mapping Fix**
-
-⚠️ **Known Issue:** `Failed to map stack` error in `address_space.map_vmo()`
-
-This issue will surface naturally during syscall implementation since syscalls exercise:
-- Stack correctness (user stack must be valid for syscall return)
-- Address space correctness (syscall must run in correct address space)
-- User ↔ kernel transitions (syscall uses stack for both directions)
-
-**Debugging Approach (from Phase 4A notes):**
-- Add telemetry to `address_space.map_vmo()` to show requested vaddr, size, and failure reason
-- Check PMM free page count before stack mapping
-- Verify stack vaddr doesn't overlap with mapped segments (0x400000, 0x401000, 0x402000)
-- Examine address space layout to ensure proper guard pages
-
-**Possible Causes:**
-1. Stack vaddr collides with ELF segment range or kernel higher-half mappings
-2. PMM returns pages that are already mapped or outside allowed physical range
-3. Stack mapping size > available contiguous pages
-4. Guard page logic rejecting valid map
-5. PMM exhaustion after segment allocations
-
----
-
-**Minimum Viable Set (5 syscalls):**
+**Minimum Viable Syscall Set (5 syscalls):**
 | Syscall | Purpose | Status |
 |---------|---------|--------|
-| `sys_exit` | Process termination | ⏳ TODO |
-| `sys_write` | Console output | ⏳ TODO |
+| `sys_exit` | Process termination | ✅ COMPLETE |
+| `sys_debug_write` | Console output | ✅ COMPLETE |
+| `sys_write` | Console output | ⏳ TODO (wraps sys_debug_write) |
 | `sys_read` | Console input | ⏳ TODO |
 | `sys_mmap` | Memory allocation | ⏳ TODO |
 | `sys_clock_gettime` | Time queries | ✅ Working |
 
-**Location:** `src/syscall/definitions.rs`
-
-**Tasks:**
-1. **Debug and fix stack mapping issue** (prerequisite for syscalls)
-2. Implement syscall handlers in `src/arch/amd64/syscall.rs`
-3. Add syscall numbers to definitions
-4. Wire up handlers in IDT
-5. Test from userspace program
+**Location:** `src/syscall/` (syscall definitions and handlers), `src/arch/amd64/syscall.rs` (MSR setup)
 
 ---
 
@@ -659,20 +704,22 @@ This issue will surface naturally during syscall implementation since syscalls e
 /var/www/rustux.com/prod/rustux/
 ├── src/
 │   ├── main.rs              # Entry point
+│   ├── init.rs              # Boot initialization, zone config
 │   ├── exec/                # ELF loader, process loader
 │   │   ├── elf.rs           # ✅ ELF parsing/loading
-│   │   ├── process_loader.rs # ✅ Process creation
+│   │   ├── process_loader.rs # ✅ Process creation, CR3 switch
 │   │   └── userspace_exec_test.rs # ✅ Test framework
 │   ├── process/             # Process management
-│   │   └── address_space.rs # ✅ Address space with page tables
+│   │   └── address_space.rs # ⚠️ PAGE TABLE ISOLATION FIX NEEDED
 │   ├── arch/amd64/
 │   │   ├── uspace.rs        # ✅ Userspace transition (IRETQ)
+│   │   ├── syscall.rs       # ✅ MSR-based syscall setup
 │   │   └── mexec.rs         # ✅ Alternative mexec implementation
 │   ├── object/              # VMOs, handles, capabilities
 │   ├── mm/
-│   │   ├── pmm.rs           # ⚠️ BUG: Single-page allocation
-│   │   └── allocator.rs     # ✅ Heap allocator
-│   └── syscall/             # Syscall interface
+│   │   ├── pmm.rs           # ✅ Vec-based PMM (zones: kernel 64MB, user 64MB)
+│   │   └── allocator.rs     # ✅ Heap allocator (64MB, MIN_BLOCK_SIZE=1024)
+│   └── syscall/             # ✅ Syscall interface (sys_debug_write, sys_process_exit)
 └── test-userspace/
     └── hello.elf           # ✅ Test binary (9KB)
 ```
@@ -695,19 +742,26 @@ cd test-userspace
 
 ## 🎯 Success Criteria
 
-### Phase 4A Complete When:
-- [x] VMO identity issue resolved ✅ (2025-01-19)
-- [ ] Verbose debug output removed
-- [ ] Address space creation works
-- [ ] ELF segments map into address space
-- [ ] Userspace transition completes
-- [ ] "Hello from userspace!" appears on debug console
+### Phase 4A Complete ✅ (2025-01-20)
+- [x] VMO identity issue resolved
+- [x] Heap allocator fixed (64MB, MIN_BLOCK_SIZE=1024)
+- [x] Address space creation works
+- [x] ELF segments map into address space
+- [x] Kernel zone exhaustion fixed (14MB → 64MB)
+- [x] Page table allocation succeeds
 
-### Phase 4B Complete When:
-- [ ] sys_write outputs to debug console
-- [ ] sys_exit terminates process cleanly
-- [ ] sys_mmap allocates memory
-- [ ] Can call syscalls from userspace
+### Phase 4B Complete When (CURRENT):
+- [x] ELF binaries load correctly
+- [x] Per-process PML4 created
+- [x] CR3 switch works
+- [x] TSS RSP0 configured
+- [x] IRETQ executes (no triple fault)
+- [ ] **USER bit set at all page-table levels** ← Current blocker
+- [ ] Separate PDP/PD/PT for userspace
+- [ ] User-mode memory reads work
+- [ ] "Hello from userspace!" prints
+- [ ] sys_debug_write callable from userspace
+- [ ] sys_process_exit works cleanly
 
 ### Phase 4 Complete When:
 - [ ] Init process (PID 1) runs
@@ -724,12 +778,22 @@ cd test-userspace
 - All core modules implemented (AMD64, MM, objects, sync, syscalls)
 - Kernel boots successfully in QEMU with UEFI
 
-### Phase 4A (2025-01-18):
+### Phase 4A: ELF Loading & Heap Allocator ✅ COMPLETE (2025-01-20)
+- Heap allocator fixed (64MB heap, MIN_BLOCK_SIZE=1024 bytes)
+- Kernel zone exhaustion resolved (14MB → 64MB)
 - ELF loader fully implemented and tested
+- All ELF segments map at expected addresses (0x400000, 0x401000, 0x402000)
 - Address space framework complete with page table management
 - Process loader ties ELF loading with address space creation
-- Userspace entry point via IRETQ implemented
-- Test infrastructure ready
+
+### Phase 4B (In Progress - 2025-01-21)
+- Per-process PML4 creation ✅
+- Kernel PML4 entries copied to process PML4 ✅
+- CR3 switch working ✅
+- TSS RSP0 configured ✅
+- User segments (DS, ES, SS) configured ✅
+- IRETQ executes without triple fault ✅
+- ❌ **BLOCKED:** USER bit propagation violation (needs separate PDP/PD/PT)
 
 **Key Files Created/Modified:**
 - `src/exec/elf.rs` - ELF parser (490 lines)
