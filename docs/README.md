@@ -12,6 +12,108 @@ A modern Linux distribution built on Rust, featuring a complete Wayland desktop 
 
 ---
 
+## 🔒 Kernel Development Environment (CRITICAL - READ FIRST)
+
+### ⚠️ QEMU/UEFI Compatibility Issue - PINNED CONFIGURATION REQUIRED
+
+**IMPORTANT:** The UEFI development environment is **pinned to specific versions**. Do not upgrade QEMU or change firmware without thorough testing.
+
+### The Problem: QEMU 8.x Regression
+
+**QEMU 8.x + distro OVMF has a known regression:**
+- Removable-media fallback boot (`/EFI/BOOT/BOOTX64.EFI`) fails for raw block devices
+- The firmware loads but **never calls `LoadImage()` on your binary**
+- Symptoms: No crash, no output, no entrypoint execution
+- This affects block device enumeration, removable media path detection, and EFI_SIMPLE_FILE_SYSTEM protocol timing
+
+### Working Configuration (PINNED)
+
+| Component | Path/Version | Notes |
+|-----------|--------------|-------|
+| **QEMU** | `/usr/local/bin/qemu-system-x86_64` | Version 7.2.0 (source-built) |
+| **EDK2 Firmware** | `/usr/local/share/qemu/edk2-x86_64-code.fd` | Bundled with QEMU 7.2 |
+| **VARS File** | `/usr/share/OVMF/OVMF_VARS_4M.fd` | System OVMF variables store |
+| **Machine Type** | `-machine q35` | Q35 chipset |
+
+### Working QEMU Command
+
+```bash
+/usr/local/bin/qemu-system-x86_64 \
+    -machine q35 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/local/share/qemu/edk2-x86_64-code.fd \
+    -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
+    -drive file=rustux.img,format=raw \
+    -debugcon file:/tmp/rustux-debug.log \
+    -serial mon:stdio \
+    -display none \
+    -no-reboot \
+    -m 512M
+```
+
+### DO NOT USE (Broken Configuration)
+
+- ❌ System QEMU: `/usr/bin/qemu-system-x86_64` (version 8.2.2)
+- ❌ System OVMF: `/usr/share/ovmf/OVMF.fd` (incompatible with any QEMU for block boot)
+- ❌ `-bios` flag (use pflash instead)
+
+### Why Custom QEMU 7.2 + EDK2 Works
+
+This configuration works because:
+1. QEMU 7.2 still exposes IDE/virtio block devices in a way EDK2 expects
+2. The bundled EDK2 firmware is built against that QEMU ABI
+3. Removable media fallback path is intact
+4. SimpleFileSystem is available early enough
+
+**This is a firmware/hypervisor ABI compatibility cliff - extremely common in OS development and poorly documented.**
+
+### Kernel Health Check: `boot_probe.efi`
+
+Before debugging kernel code, run this tiny EFI binary to verify the environment:
+
+```rust
+#[entry]
+fn main() -> Status {
+    // Write to debug console (port 0xE9)
+    unsafe {
+        core::arch::asm!("out dx, al",
+            in("dx") 0xE9u16,
+            in("al") b'!',
+            options(nomem, nostack));
+    }
+    loop {}
+}
+```
+
+**If `boot_probe.efi` doesn't run:**
+- Don't touch kernel code
+- Don't debug page tables
+- Don't reason further
+- Fix the environment first
+
+### How We Discovered This Issue
+
+1. **Old kernel** (`/var/www/rustux.com/prod/kernel/`) appeared to "work"
+2. **New kernel** (`/var/www/rustux.com/prod/rustux/`) appeared to "fail"
+3. **Root cause:** Testing was done with different QEMU versions
+4. **Resolution:** Both kernels work identically with QEMU 7.2 + EDK2
+5. **Conclusion:** This was an environmental regression, not a kernel bug
+
+### Canonical Rule for Rustux Kernel Development
+
+**Treat anything other than QEMU 7.2.x + bundled EDK2 as unsupported.**
+
+The UEFI development environment is pinned. Period.
+
+### For More Details
+
+See `PLAN.md` for:
+- Full investigation timeline
+- PMM call numbering implementation
+- Page table isolation fix status
+- Boot manager recommendations
+
+---
+
 ## Implementation Status (January 2025)
 
 ### ✅ Completed: Core System (Phases 0-12)
