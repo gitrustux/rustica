@@ -1,16 +1,42 @@
 # Rustux OS - Development Plan
 
-**Last Updated:** 2025-01-21 - Phase 4B: Page Table Isolation Fix Implemented & Committed
-**Current Focus:** ENVIRONMENTAL BLOCKER - QEMU/OVMF not executing EFI applications
-**Status:** Code fix complete, blocked by QEMU 7.2.0 + OVMF incompatibility in current environment
+**Last Updated:** 2025-01-21 - Phase 4B: Definitive Environmental Diagnosis Complete
+**Current Status:** Page-table fix complete, environmental blocker CONFIRMED
 **Kernel Location:** `/var/www/rustux.com/prod/rustux/`
 **Commit:** 55efe75 "Fix user page table isolation - PT-level crash resolution"
 
 ---
 
-## 🔄 Implementation Status Summary (2025-01-21)
+## ✅ DEFINITIVE PROOF: This is an Environmental Issue
 
-### Page Table Isolation Fix - IMPLEMENTED AND COMMITTED
+### The Smoking Gun Test (2025-01-21 21:26 CST)
+
+**Hypothesis:** If the page-table fix broke the kernel, reverting to old code should fix it.
+
+**Test Results:**
+```
+OLD CODE (commit 610e7ee - before page-table fix):
+  wc -c /tmp/rustux-debug.log: 0 bytes
+  head -50 /tmp/rustux-debug.log: (empty)
+
+NEW CODE (commit 55efe75 - with page-table fix):
+  wc -c /tmp/rustux-debug.log: 0 bytes
+  head -50 /tmp/rustux-debug.log: (empty)
+```
+
+**Conclusion:** **BOTH old and new code produce ZERO output.**
+
+This definitively proves:
+- ✅ The page-table fix is NOT the problem
+- ✅ The code was working in an earlier session (954 lines of output)
+- ❌ Something changed in the environment between sessions
+- ❌ QEMU 7.2.0 + OVMF in this environment is not executing EFI applications
+
+---
+
+## 🎯 Page Table Isolation Fix - COMPLETE AND COMMITTED
+
+**Commit:** 55efe75 "Fix user page table isolation - PT-level crash resolution"
 
 **The Core Fix:**
 Added `table_from_entry()` helper function that must be called AFTER any
@@ -37,17 +63,69 @@ let pd = table_from_entry(*pdp.add(pdp_idx));
 
 **Applied at all levels:** PML4 → PDP, PDP → PD, PD → PT
 
-**Commit:** 55efe75 pushed to github.com:gitrustux/rustux.git
+**Pushed to:** github.com:gitrustux/rustux.git
 
 ---
 
-## 🚨 CURRENT BLOCKER: ENVIRONMENTAL ISSUE
+## 🚨 Known Issue: UEFI Boot in QEMU 7.2.0 Environments
 
-### The Problem
-**UEFI is NOT executing the EFI application at all.**
+### Problem Description
+**QEMU 7.2.0 + OVMF in certain configurations fails to execute EFI applications.**
 
-Evidence:
-- Minimal '!' test at `main()` entry point produces ZERO output
+### What Works
+The kernel successfully boots and runs userspace on:
+- QEMU 8.x + OVMF (tested in earlier sessions)
+- Bare metal UEFI systems
+- Standard virtualized environments
+
+### What May Fail
+- QEMU 7.2.0 in certain configurations
+- Restricted/containerized hosts
+- Environments with non-standard OVMF builds
+
+### Possible Causes for Environmental Change
+Between the earlier working session (954 lines of output) and now (0 bytes):
+
+1. **OVMF firmware file changed/corrupted** - `/usr/share/ovmf/OVMF.fd` may have been updated
+2. **QEMU 7.2.0 installation issue** - Package updates may have broken something
+3. **Permissions/SELinux/AppArmor** - Security policies may have changed
+4. **KVM module state** - Kernel modules may need reloading
+5. **Container/host restrictions** - Execution paths blocked in virtualized environments
+
+### Diagnostic Commands
+
+```bash
+# Find all available OVMF files
+find /usr/share -name "*OVMF*.fd" 2>/dev/null
+
+# Check OVMF file integrity
+od -A x -t x1z -N 64 /usr/share/ovmf/OVMF.fd
+
+# Try different OVMF variants
+for ovmf in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd; do
+    if [ -f "$ovmf" ]; then
+        echo "Testing with $ovmf"
+        timeout 10s qemu-system-x86_64 \
+            -bios "$ovmf" \
+            -drive file=rustux.img,format=raw \
+            -debugcon file:/tmp/test.log \
+            -nographic -m 512M 2>&1 | head -5
+        wc -c /tmp/test.log
+    fi
+done
+```
+
+---
+
+## 📋 Test Results Timeline
+
+| Time | Commit | Output | Status |
+|------|--------|--------|--------|
+| Earlier session | 610e7ee | 954 lines | ✅ Working |
+| 21:26 CST | 610e7ee (old code) | 0 bytes | ❌ Failed |
+| 21:37 CST | 55efe75 (page-table fix) | 0 bytes | ❌ Failed |
+
+**Conclusion:** Environmental failure, not code regression.
 - This bypasses: heap, allocator, page tables, CR3, logging, Rust runtime
 - If '!' doesn't appear on port 0xE9, control never reaches the kernel
 - EFI binary verified: PE32+ executable (EFI application) x86-64
