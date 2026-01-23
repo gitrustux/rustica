@@ -48,48 +48,65 @@ apt install parted dosfstools coreutils
 
 ```
 /var/www/rustux.com/prod/
-├── rustux/                 # Kernel (UEFI application)
-│   ├── src/                # Kernel source code
-│   ├── build.rs            # Embed ramdisk with userspace binaries
-│   ├── test-userspace/     # C programs for shell, init, tests
+├── loader/                 # UEFI transition kernel + live image tooling
+│   ├── kernel-efi/         # Monolithic UEFI kernel (Phase 6 validated)
+│   ├── uefi-loader/        # UEFI bootloader (loads kernel.efi)
 │   ├── build-live-image.sh # Live USB build script
 │   └── target/
 │       └── x86_64-unknown-uefi/
 │           └── release/
-│               └── rustux.efi    # Built kernel binary
-└── rustica/                # Userspace OS distribution
-    └── docs/               # Documentation (this file)
+│               └── kernel.efi    # Built kernel binary
+├── rustux/                 # Canonical microkernel (modular architecture)
+│   ├── src/                # Kernel source code
+│   └── build.rs            # Embed ramdisk with userspace binaries
+├── rustica/                # Userspace OS distribution
+│   ├── docs/               # Documentation (this file)
+│   └── test-userspace/     # C programs for shell, init, tests
+└── apps/                   # CLI tools and GUI applications
 ```
+
+**Note on Kernel Architecture:**
+
+The project currently has two kernel implementations:
+- `loader/kernel-efi/` - **Transition kernel** (monolithic UEFI application)
+  - Used to validate Phase 6 features (live boot, PS/2 keyboard, framebuffer, shell)
+  - Single binary for easier live USB testing
+  - Will be retired after validated subsystems migrate to microkernel
+
+- `rustux/` - **Canonical microkernel** (modular architecture)
+  - The "real" Rustux kernel with proper separation of concerns
+  - Phase 6D will migrate validated subsystems from transition kernel
+  - Target for all future development
 
 ---
 
 ## Build Steps
 
-### Step 1: Build the Kernel
+### Step 1: Build the Transition Kernel
 
 ```bash
-cd /var/www/rustux.com/prod/rustux
+cd /var/www/rustux.com/prod/loader/kernel-efi
 
 # Build UEFI kernel with release optimizations
-cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
+cargo build --release --target x86_64-unknown-uefi
 ```
 
-**Output:** `target/x86_64-unknown-uefi/release/rustux.efi`
+**Output:** `target/x86_64-unknown-uefi/release/kernel.efi`
 
 ### Step 2: Build Userspace Programs
 
 ```bash
-cd /var/www/rustux.com/prod/rustux/test-userspace
+cd /var/www/rustux.com/prod/rustica/test-userspace
 
 # Build shell (C program, static linking, no stdlib)
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o ../target/shell.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o shell.elf
 
 # Build init (first userspace process)
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o ../target/init.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o init.elf
 
 # Build test programs (optional)
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector hello.c -o ../target/hello.elf
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector counter.c -o ../target/counter.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector hello.c -o hello.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector counter.c -o counter.elf
 ```
 
 **Note:** The kernel's `build.rs` automatically embeds these binaries into the ramdisk during compilation.
@@ -97,15 +114,18 @@ x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector counter.c -o ../targ
 ### Step 3: Build Live USB Image
 
 ```bash
-cd /var/www/rustux.com/prod/rustux
+cd /var/www/rustux.com/prod
 
-# Make build script executable
+# Use wrapper script (delegates to loader/build-live-image.sh)
 chmod +x build-live-image.sh
-
-# Build image (uses default version 0.1.0)
 ./build-live-image.sh
 
-# Or specify a custom version
+# Or run directly from loader/
+cd loader
+chmod +x build-live-image.sh
+./build-live-image.sh
+
+# Specify a custom version
 RUSTUX_VERSION=1.0.0 ./build-live-image.sh
 ```
 
@@ -314,18 +334,17 @@ For rapid development iteration:
 #!/bin/bash
 # dev-build.sh - Quick rebuild and test script
 
-cd /var/www/rustux.com/prod/rustux
-
-# Rebuild kernel
-cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
+# Rebuild transition kernel
+cd /var/www/rustux.com/prod/loader/kernel-efi
+cargo build --release --target x86_64-unknown-uefi
 
 # Rebuild userspace
-cd test-userspace
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o ../target/shell.elf
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o ../target/init.elf
-cd ..
+cd /var/www/rustux.com/prod/rustica/test-userspace
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o shell.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o init.elf
 
 # Rebuild image
+cd /var/www/rustux.com/prod
 ./build-live-image.sh
 
 # Optional: Test in QEMU (if available)

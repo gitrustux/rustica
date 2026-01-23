@@ -1615,6 +1615,34 @@ The shell lives in `rustica/` as a normal userspace program, NOT in the kernel. 
 
 ---
 
+### Phase 6 Implementation Note
+
+**IMPORTANT: Kernel Architecture Transition (January 2025)**
+
+A temporary monolithic UEFI kernel (`loader/kernel-efi/`) was used to validate live boot, PS/2 keyboard input, framebuffer console, and interactive shell functionality.
+
+**Directory Structure:**
+- `loader/kernel-efi/` - Monolithic UEFI transition kernel (validated Phase 6 features)
+- `rustux/` - Canonical Rustux microkernel (modular architecture)
+- `rustica/` - Userspace OS distribution and tools
+
+**Why Two Kernels?**
+The transition kernel (`kernel-efi/`) was a pragmatic choice for Phase 6 validation:
+- Single UEFI application for direct boot testing
+- All drivers in one binary for easier debugging
+- Faster iteration on live USB media
+- Validated hardware (PS/2 keyboard, framebuffer, UEFI)
+
+**Future Migration (Phase 6D+):**
+Phase 6D will migrate validated subsystems from the transition kernel into the canonical microkernel:
+- PS/2 keyboard driver → `rustux/src/drivers/keyboard/`
+- Framebuffer console → `rustux/src/drivers/display/`
+- Live boot tooling → `rustux/src/boot/uefi/`
+
+The monolithic `kernel-efi/` will be retired once migration is complete.
+
+---
+
 ### Phase 6D: Stability & UX Guarantees (Week 7-8)
 
 **Goal:** Ensure system is stable and usable for extended sessions
