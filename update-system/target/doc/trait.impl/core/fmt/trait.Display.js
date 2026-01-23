@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["base64",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html\" title=\"trait core::fmt::Display\">Display</a> for <a class=\"enum\" href=\"base64/alphabet/enum.ParseAlphabetError.html\" title=\"enum base64::alphabet::ParseAlphabetError\">ParseAlphabetError</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html\" title=\"trait core::fmt::Display\">Display</a> for <a class=\"enum\" href=\"base64/enum.DecodeError.html\" title=\"enum base64::DecodeError\">DecodeError</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html\" title=\"trait core::fmt::Display\">Display</a> for <a class=\"enum\" href=\"base64/enum.DecodeSliceError.html\" title=\"enum base64::DecodeSliceError\">DecodeSliceError</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html\" title=\"trait core::fmt::Display\">Display</a> for <a class=\"enum\" href=\"base64/enum.EncodeSliceError.html\" title=\"enum base64::EncodeSliceError\">EncodeSliceError</a>",0],["impl&lt;'a, 'e, E: <a class=\"trait\" href=\"base64/engine/trait.Engine.html\" title=\"trait base64::engine::Engine\">Engine</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Display.html\" title=\"trait core::fmt::Display\">Display</a> for <a class=\"struct\" href=\"base64/display/struct.Base64Display.html\" title=\"struct base64::display::Base64Display\">Base64Display</a>&lt;'a, 'e, E&gt;",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1551]}

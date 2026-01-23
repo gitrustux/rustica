@@ -1,1275 +1,290 @@
-# Rustica OS
+# Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-A modern Linux distribution built on Rust, featuring a complete Wayland desktop environment, mobile support, and advanced security capabilities.
+**Status:** 🟡 Phase 6A-6C COMPLETE | Keyboard IRQ debugging in progress
 
-## 🧪 Kernel Development Status (January 2025)
+---
 
-### RUSTUX Microkernel - Phase 4 Complete ✅
+## Project Overview
 
-The RUSTUX microkernel (`/var/www/rustux.com/prod/kernel/`) is a Rust-based microkernel with advanced memory management and userspace execution.
+**Rustux OS** is a hobby operating system written in Rust, featuring a native UEFI microkernel with an interactive shell and Dracula-themed interface.
 
-**Location:** `/var/www/rustux.com/prod/rustux/`
-
-#### Completed Phases
-
-##### Phase 4A: ELF Loading & Heap Allocator ✅
-- Per-process address spaces
-- 64MB heap allocator with MIN_BLOCK_SIZE=1024
-- ELF binary loading with segment mapping
-- VMO (Virtual Memory Object) abstraction
-- Page table allocation and management
-
-##### Phase 4B: First CPL3 Instruction ✅
-- Page table isolation (kernel vs userspace)
-- Per-process PML4 creation
-- PML4 ownership rules enforced
-- Canary reads before CR3 load
-- CR3 switching with canary verification
-- IRETQ to userspace
-- TSS RSP0 configuration
-- User segments (DS, ES, SS) configured
-- Silent Boot Phase (no port I/O before ExitBootServices)
-
-##### Phase 4C: Syscalls & Userspace Memory ✅
-- `int 0x80` syscall interface
-- Syscall dispatch table (30+ syscall numbers)
-- sys_exit() - process termination
-- sys_debug_write() - kernel-mediated debug output
-- Argument/return handling via interrupt frame
-- Userspace can call kernel and terminate cleanly
-
-#### Key Technical Achievements
-
-**Memory Management:**
-- Physical Memory Manager (PMM) with boot allocator
-- 4-level page tables (PML4 → PDPT → PD → PT)
-- User/Supervisor page permissions (U bit)
-- Page table isolation prevents kernel/userspace interference
-
-**Boot Process:**
-- UEFI firmware support (EDK2/OVMF 7.2.0)
-- Silent Boot Phase enforcement
-- ExitBootServices confirmation
-- Framebuffer progress indicators (RED→GREEN→BLUE→WHITE→CYAN→YELLOW)
-
-**Userspace Execution:**
-- Process address spaces with isolated page tables
-- IRETQ frame structure for CPL3 transition
-- Safe kernel text/stack access after CR3 switch
-- Syscall interface via `int 0x80`
-- Userspace ELF loading and execution verified
-
-#### Current Capabilities
-
-✅ UEFI boot from firmware
-✅ Physical memory management
-✅ Virtual memory with 4-level page tables
-✅ Process isolation with per-page tables
-✅ Userspace ELF execution
-✅ Syscall interface (int 0x80)
-✅ Process termination
-
-#### Frameboot Progress Indicators
-
-The kernel uses framebuffer color fills to show boot progress:
-- **RED** - EFI entry point reached
-- **GREEN** - ExitBootServices succeeded
-- **BLUE** - CR3 load succeeded
-- **WHITE** - About to IRETQ to userspace
-- **CYAN** (top half) - Syscall handler called
-- **YELLOW** (full screen) - Process exited
-
-#### Development Environment
-
-**Required Configuration (Pinned):**
-```bash
-QEMU: /usr/local/bin/qemu-system-x86_64 (version 7.2.0)
-Firmware: EDK2 (bundled with QEMU 7.2)
-Machine Type: q35
+**Boot Flow:**
+```
+UEFI Firmware → BOOTX64.EFI → Transition Kernel → Init (PID 1) → Shell (PID 2)
 ```
 
-**Build:**
-```bash
-cd /var/www/rustux.com/prod/rustux/
-cargo build --release --target x86_64-unknown-uefi --features uefi_kernel,userspace_test
-```
+---
 
-**Run:**
-```bash
-/usr/local/bin/qemu-system-x86_64 \
-  -machine q35 \
-  -bios /usr/share/qemu/OVMF.fd \
-  -drive format=raw,file=disk.img \
-  -m 512M
-```
+## Current Status (January 23, 2025)
 
-#### Known Limitations
+### ✅ Completed: Phase 6A-6C (Interactive Shell)
 
-- Debug output via port 0xE9 not visible in current QEMU/OVMF configuration
-- No scheduler yet (single process only)
-- No multi-process support
-- No signal handling
-- Process termination halts (no cleanup)
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Direct UEFI Boot** | ✅ Complete | No GRUB, standalone BOOTX64.EFI |
+| **PS/2 Keyboard Driver** | ✅ Complete | IRQ1, scancode-to-ASCII, modifiers |
+| **Framebuffer Console** | ✅ Complete | RGB565, PSF2 font (8x16), scrolling |
+| **Process Management** | ✅ Complete | 256-slot table, round-robin scheduler |
+| **Syscall Interface** | ✅ Complete | read, write, spawn, exit, getpid, yield |
+| **VFS + Ramdisk** | ✅ Complete | Embedded ELF binaries (init, shell, hello, counter) |
+| **Interactive Shell** | ✅ Complete | C shell with Dracula theme, built-in commands |
+| **Live USB Image** | ✅ Complete | 128MB GPT disk image with FAT32 ESP |
 
-#### Next Steps
+### 🟡 In Progress: Phase 6D (Keyboard IRQ Delivery)
 
-Potential Phase 5 areas:
-- Process scheduler (multiple processes)
-- Signal handling
-- Process cleanup and reaping
-- Additional syscalls (read, write, spawn)
-- Inter-process communication
-- Virtual filesystem
+**Issue:** PS/2 keyboard IRQ is configured correctly (level-triggered, active-low), but interrupt is not reaching the CPU.
+
+**Latest Fixes Applied:**
+1. ✅ IOAPIC redirection: Level-triggered + active-low (bit 13 | bit 15)
+2. ✅ LAPIC MSR enablement: IA32_APIC_BASE (MSR 0x1B bit 11)
+3. ✅ Corrected LAPIC register offsets: SVR 0xF0, TPR 0x080
+4. ✅ Added `int 33` diagnostic test to verify IDT entry
+5. ✅ EOI sent to Local APIC (0xFEE00B0) not PIC port
+
+**Current Image:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
+- SHA256: `8fa30b0e97979ded6e238b067c0a240ee75d57a5f08d2145eb97e95c632ed832`
 
 ---
 
 ## Directory Structure
 
-- `releases/` - Official releases (CLI, Desktop, Server)
-- `repo/` - Package repository (system, apps, kernel, metadata)
-- `images/` - Installation images (installer, live, VM)
-- `docs/` - Documentation
-- `tools/` - Build and deployment tools
-
----
-
-## 🔒 Kernel Development Environment (CRITICAL - READ FIRST)
-
-### ⚠️ QEMU/UEFI Compatibility Issue - PINNED CONFIGURATION REQUIRED
-
-**IMPORTANT:** The UEFI development environment is **pinned to specific versions**. Do not upgrade QEMU or change firmware without thorough testing.
-
-### The Problem: QEMU 8.x Regression
-
-**QEMU 8.x + distro OVMF has a known regression:**
-- Removable-media fallback boot (`/EFI/BOOT/BOOTX64.EFI`) fails for raw block devices
-- The firmware loads but **never calls `LoadImage()` on your binary**
-- Symptoms: No crash, no output, no entrypoint execution
-- This affects block device enumeration, removable media path detection, and EFI_SIMPLE_FILE_SYSTEM protocol timing
-
-### Working Configuration (PINNED)
-
-| Component | Path/Version | Notes |
-|-----------|--------------|-------|
-| **QEMU** | `/usr/local/bin/qemu-system-x86_64` | Version 7.2.0 (source-built) |
-| **EDK2 Firmware** | `/usr/local/share/qemu/edk2-x86_64-code.fd` | Bundled with QEMU 7.2 |
-| **VARS File** | `/usr/share/OVMF/OVMF_VARS_4M.fd` | System OVMF variables store |
-| **Machine Type** | `-machine q35` | Q35 chipset |
-
-### Working QEMU Command
-
-```bash
-/usr/local/bin/qemu-system-x86_64 \
-    -machine q35 \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/local/share/qemu/edk2-x86_64-code.fd \
-    -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-    -drive file=rustux.img,format=raw \
-    -debugcon file:/tmp/rustux-debug.log \
-    -serial mon:stdio \
-    -display none \
-    -no-reboot \
-    -m 512M
-```
-
-### DO NOT USE (Broken Configuration)
-
-- ❌ System QEMU: `/usr/bin/qemu-system-x86_64` (version 8.2.2)
-- ❌ System OVMF: `/usr/share/ovmf/OVMF.fd` (incompatible with any QEMU for block boot)
-- ❌ `-bios` flag (use pflash instead)
-
-### Why Custom QEMU 7.2 + EDK2 Works
-
-This configuration works because:
-1. QEMU 7.2 still exposes IDE/virtio block devices in a way EDK2 expects
-2. The bundled EDK2 firmware is built against that QEMU ABI
-3. Removable media fallback path is intact
-4. SimpleFileSystem is available early enough
-
-**This is a firmware/hypervisor ABI compatibility cliff - extremely common in OS development and poorly documented.**
-
-### Kernel Health Check: `boot_probe.efi`
-
-Before debugging kernel code, run this tiny EFI binary to verify the environment:
-
-```rust
-#[entry]
-fn main() -> Status {
-    // Write to debug console (port 0xE9)
-    unsafe {
-        core::arch::asm!("out dx, al",
-            in("dx") 0xE9u16,
-            in("al") b'!',
-            options(nomem, nostack));
-    }
-    loop {}
-}
-```
-
-**If `boot_probe.efi` doesn't run:**
-- Don't touch kernel code
-- Don't debug page tables
-- Don't reason further
-- Fix the environment first
-
-### How We Discovered This Issue
-
-1. **Old kernel** (`/var/www/rustux.com/prod/kernel/`) appeared to "work"
-2. **New kernel** (`/var/www/rustux.com/prod/rustux/`) appeared to "fail"
-3. **Root cause:** Testing was done with different QEMU versions
-4. **Resolution:** Both kernels work identically with QEMU 7.2 + EDK2
-5. **Conclusion:** This was an environmental regression, not a kernel bug
-
-### Canonical Rule for Rustux Kernel Development
-
-**Treat anything other than QEMU 7.2.x + bundled EDK2 as unsupported.**
-
-The UEFI development environment is pinned. Period.
-
-### For More Details
-
-See `PLAN.md` for:
-- Full investigation timeline
-- PMM call numbering implementation
-- Page table isolation fix status
-- Boot manager recommendations
-
----
-
-## Implementation Status (January 2025)
-
-### ✅ Completed: Core System (Phases 0-12)
-
-All high and medium priority system components are complete, including CLI utilities, GUI desktop environment, mobile support, and comprehensive documentation.
-
----
-
-## 🖥️ Graphical User Interface (Phases 0-12)
-
-### Desktop Environment: Rustica Shell
-
-A complete Wayland-based desktop environment built with Rust and Smithay.
-
-#### Wayland Compositor (`rustica-comp`)
-- **Location**: `/var/www/rustux.com/prod/apps/gui/rustica-comp/`
-- **Features**:
-  - Smithay-based Wayland compositor
-  - DRM/KMS backend for GPU acceleration
-  - libinput for input device handling
-  - Multi-monitor support
-  - XDG shell protocol support
-  - Layer shell for panels/docks
-- **Protocols**: Wayland core, XDG shell, layer shell, viewporter, pointer constraints, tablet support
-
-#### Shell Components
-- **Panel** (`rustica-panel`): Top panel with app menu, system tray, status indicators
-- **Dock** (`rustica-dock`): Application launcher and switcher with drag-and-drop
-- **App Launcher** (`rustica-launcher`): Grid-based application launcher
-- **Workspace Manager** (`rustica-workspaces`): Multiple virtual workspaces with dynamic switching
-- **Notification System** (`rustica-notifications`): Modern notification daemon
-
-#### Desktop Applications
-- **Terminal** (`rustica-term`): VT100/ANSI terminal emulator with tabs
-- **File Manager** (`rustica-files`): Modern file browser with thumbnail generation
-- **Text Editor** (`rustica-edit`): Lightweight text editor with syntax highlighting
-- **Screenshot Tool** (`rustica-screenshot`): Screen capture with region selection
-- **Settings** (`rustica-settings`): System configuration application
-- **Application Library** (`rustica-applibrary`): App management and discovery
-
-#### Web Browser (`rustica-web`) ✨ NEW
-- **Location**: `/var/www/rustux.com/prod/apps/gui/rustica-web/`
-- **Based on**: WebKitGTK 2.50+
-- **Features**:
-  - Modern tabbed browsing interface
-  - Privacy-focused (DuckDuckGo search, no tracking)
-  - **Mobile Mode**: Auto-detects touch devices and small screens
-  - **Desktop UI**: Traditional navigation bar with back/forward/refresh
-  - **Mobile UI**: Touch-optimized with bottom navigation bar
-  - **Mobile User Agent**: Android 13 user agent for mobile sites
-  - JavaScript, WebGL, and hardware acceleration enabled
-  - Developer tools integration
-- **Mobile Features**:
-  - Touch gesture support (swipe navigation, pinch-to-zoom)
-  - Kinetic scrolling
-  - Spatial navigation (D-pad support)
-  - Larger touch targets (40px minimum)
-  - Responsive viewport meta tag handling
-- **Usage**:
-  ```bash
-  # Desktop mode (auto-detected)
-  rustica-web
-
-  # Force mobile mode
-  RUSTICA_MOBILE_MODE=true rustica-web
-
-  # Touch device mode
-  RUSTICA_TOUCH_DEVICE=true rustica-web
-  ```
-
----
-
-## 📱 Mobile Support (Phases 7-8)
-
-### Mobile-Optimized Components
-
-#### Login Greeter (`rustica-greeter`)
-- Touch-friendly login interface
-- Mobile-optimized virtual keyboard integration
-- User session selection
-
-#### Initial Setup (`rustica-initial-setup`)
-- First-boot configuration wizard
-- Touch-optimized setup flow
-- Mobile device calibration
-
-#### Mobile Features
-- **Touch Gesture System**: Swipe, pinch, tap gestures
-- **On-Screen Keyboard**: Full virtual keyboard with layouts
-- **Mobile UI Components**: Touch-optimized widgets
-- **Sensor Integration**: Accelerometer, gyroscope, ambient light
-- **Battery Optimization**: Power management for mobile devices
-
----
-
-## 🔧 System Integration (Phase 7)
-
-### Desktop Portal (`xdg-desktop-portal-rustica`)
-- File picker dialogs
-- Screenshot permissions
-- Camera/microphone access
-- Wallpaper access
-- Screen casting
-
-### Theme Engine
-- Material Design 3 theming
-- Dark/light mode support
-- Custom accent colors
-- Font configuration
-
-### Session Manager
-- User session startup
-- Application autostart
-- Session restoration
-
----
-
-## 📦 Package Management (Phase 9)
-
-### Live Update System - RPG (Rustica Package Manager)
-
-Rustica OS features a comprehensive live update system built from scratch in Rust, enabling atomic package operations, full rollback support, and background updates without system interruption.
-
-#### System Architecture
-
-**Location**: `/var/www/rustux.com/prod/rustica/update-system/`
-
-```
-update-system/
-├── rpg-core/              # Core library
-│   ├── lib.rs           # Main entry point
-│   ├── archive.rs        # .rpg package format
-│   ├── ops.rs            # High-level operations
-│   ├── fetch.rs          # HTTP downloading with failover
-│   ├── sources.rs        # Repository source management
-│   ├── transaction.rs    # Transaction management
-│   ├── registry.rs       # Package registry
-│   ├── layout.rs         # Filesystem layout
-│   ├── signature.rs      # Ed25519 cryptographic signing
-│   ├── package.rs        # Package types
-│   ├── version.rs        # Semantic versioning
-│   └── symlink.rs        # Atomic symlink operations
-├── rpg/                  # CLI tool
-│   └── src/bin/rpg.rs    # Command implementation
-└── update-daemon/        # Background service
-    └── src/main.rs       # Update daemon
-```
-
-#### Package Format (.rpg)
-
-RPG packages are tar.gz archives with the following structure:
-
-```
-package.rpg
-├── metadata.json          # Package manifest
-├── files/                 # Actual files to install
-│   ├── usr/
-│   ├── bin/
-│   └── ...
-├── scripts/               # Installation scripts (optional)
-│   ├── pre-install.sh
-│   ├── post-install.sh
-│   └── pre-remove.sh
-└── signature.sig          # Detached Ed25519 signature
-```
-
-**metadata.json structure:**
-```json
-{
-  "name": "example-app",
-  "version": "1.2.3",
-  "type": "app",
-  "arch": "x86_64",
-  "description": "An example application",
-  "size": 1048576,
-  "sha256": "abc123...",
-  "dependencies": ["libfoo >= 1.0"],
-  "files": ["usr/bin/app", "usr/share/app/..."],
-  "signature": "base64-encoded-signature"
-}
-```
-
-#### Filesystem Layout
-
-Versioned packages are installed to separate directories:
-
-```
-/system/
-├── v1.0.0/           # System version 1.0.0
-│   ├── usr/
-│   ├── bin/
-│   └── ...
-├── v1.1.0/           # System version 1.1.0
-├── current -> v1.1.0 # Active version (symlink)
-
-/apps/
-├── example-app/
-│   ├── 1.0.0/       # App version 1.0.0
-│   │   ├── bin/
-│   │   └── share/
-│   ├── 1.1.0/       # App version 1.1.0
-│   └── current -> 1.1.0
-```
-
-#### Key Features
-
-1. **Atomic Operations**
-   - Never overwrites active files
-   - Versioned directory layout
-   - Atomic symlink swaps for activation
-   - POSIX `rename()` ensures atomicity
-
-2. **Rollback Support**
-   - Previous versions retained until explicitly removed
-   - Transaction history tracking
-   - One-command rollback to any previous version
-   - Automatic rollback on failure
-
-3. **Live Updates**
-   - Applications update while running
-   - Userland updates without interruption
-   - Kernel updates installed alongside, activated on reboot
-   - Background download capability
-
-4. **Cryptographic Security**
-   - Ed25519 digital signatures
-   - SHA-256 checksum verification
-   - Public key infrastructure
-   - Signature verification before installation
-
-5. **Multiple Source Support**
-   - Configurable repository sources
-   - Priority-based source selection
-   - Automatic failover on source failure
-   - Per-source enable/disable
-
-#### Configuration
-
-**Sources Configuration** (`/etc/rpg/sources.list`):
-```
-# Rustica Package Sources
-# Format: type url [priority]
-# Types: kernel, system, apps
-
-kernel http://rustux.com/kernel 10
-system http://rustux.com/rustica 10
-apps http://rustux.com/apps 10
-
-# Mirror sources (higher priority = preferred)
-kernel-mirror http://mirror.example.com/kernel 5
-```
-
-**Source Types:**
-- `kernel` - Kernel packages (require reboot)
-- `system` - System userland packages
-- `apps` - Application packages
-
-#### CLI Commands
-
-```bash
-# Check for updates
-rpg update --check-only
-
-# Install all updates
-rpg update
-
-# Install updates in background
-rpg update --background
-
-# Install specific package
-rpg install <package>
-
-# Install specific version
-rpg install <package> --version 1.2.3
-
-# Remove package
-rpg remove <package>
-
-# Rollback to previous version
-rpg rollback <package>
-
-# Rollback system
-rpg rollback system
-
-# Show status
-rpg status
-
-# Show detailed status
-rpg status --detailed
-
-# List packages
-rpg list
-
-# List with filter
-rpg list --pattern "web" --kind app
-
-# Manage sources
-rpg sources list
-rpg sources add mirror https://mirror.example.com/apps 50
-rpg sources remove mirror
-rpg sources enable mirror
-rpg sources disable mirror
-rpg sources check
-```
-
-#### Package Manager API
-
-**High-level operations:**
-```rust
-use rpg_core::PackageManager;
-
-let manager = PackageManager::new()?;
-
-// Check for updates
-let updates = manager.check_updates().await?;
-
-// Install package
-manager.install_package("app", Some("1.0.0"), PackageKind::App).await?;
-
-// Update all packages
-let result = manager.update_all().await?;
-
-// Rollback
-manager.rollback("app", None).await?;
-
-// List installed
-let packages = manager.list_installed().await?;
-
-// Get status
-let status = manager.get_status().await?;
-```
-
-#### Transaction Management
-
-All package operations run within transactions:
-
-```rust
-use rpg_core::{Transaction, TransactionKind};
-
-// Transaction automatically:
-// 1. Creates versioned directory
-// 2. Extracts package files
-// 3. Updates metadata
-// 4. Performs atomic symlink swap
-// 5. Records rollback information
-// 6. On failure: automatically rolls back
-```
-
-**Transaction Results:**
-- `Success { activated, requires_reboot }` - Installation succeeded
-- `Failed { error, partial }` - Installation failed with partial installation
-- `RolledBack { reason }` - Transaction was rolled back
-
-#### Package Creation
-
-Create an `.rpg` package:
-
-```rust
-use rpg_core::{PackageManifest, PackageArchive, create_package};
-use rpg_core::{PackageKind, signature::KeyPair};
-
-// Generate signing key
-let key = KeyPair::generate();
-let signature = key.sign(b"package-data");
-
-// Create manifest
-let manifest = PackageManifest::new(
-    "myapp".to_string(),
-    "1.0.0".to_string(),
-    PackageKind::App,
-    "x86_64".to_string(),
-    1024 * 1024, // size
-    sha256_hash,
-    "https://rustux.com/apps/myapp-1.0.0.rpg".to_string(),
-    signature,
-);
-
-// Create package
-create_package(
-    "/path/to/source/files",
-    "/output/myapp-1.0.0.rpg",
-    manifest,
-)?;
-```
-
-#### Registry
-
-Package installation state tracked in `/var/lib/rpg/registry.json`:
-
-```json
-{
-  "packages": {
-    "myapp": [
-      {"major": 1, "minor": 0, "patch": 0, "pre": null, "build": null},
-      {"major": 0, "minor": 9, "patch": 0, "pre": null, "build": null}
-    ]
-  },
-  "active": {
-    "myapp": {"major": 1, "minor": 0, "patch": 0}
-  },
-  "transactions": [...],
-  "pending": []
-}
-```
-
-#### Update Daemon
-
-Background service (`rustic-update-daemon`) for:
-
-- Periodic update checks
-- Background downloads
-- User preference handling
-- Transaction queue management
-- System reboot coordination
-
-#### Security Features
-
-1. **Ed25519 Signatures**
-   - Each package signed with developer key
-   - Public key verification before installation
-   - Signature stored in package manifest
-
-2. **SHA-256 Checksums**
-   - Computed before download from repository
-   - Verified after download
-   - Mismatch = automatic rejection
-
-3. **Atomic Operations**
-   - No partial states
-   - All-or-nothing installation
-   - Automatic rollback on failure
-
-4. **Capability Integration**
-   - Packages declare capability requirements
-   - Verified before installation
-   - Integration with `capctl` system
-
-#### Error Handling
-
-Comprehensive error types:
-- `Io` - Filesystem errors
-- `Serialization` - JSON parse errors
-- `Network` - Download failures
-- `SignatureVerification` - Invalid signatures
-- `PackageNotFound` - Missing packages
-- `VersionNotFound` - Missing versions
-- `TransactionFailed` - Operation failures
-- `RollbackFailed` - Rollback failures
-- `Layout` - Filesystem layout issues
-- `PermissionDenied` - Permission issues
-
-#### Package Manager Integration
-
-- **Flatpak**: Flatpak integration for third-party apps
-- **AppImage**: AppImage support for portable applications
-- **Native RPG**: Full `rpg` integration with live updates
-
----
-
-## 🧪 Testing Framework (Phase 10)
-
-### Complete Test Suite
-
-#### Testing Framework (`Phase 10.1`)
-- Unit test framework
-- Integration test framework
-- Test runners and reporters
-
-#### Integration Tests (`Phase 10.2`)
-- System-level testing
-- Component integration testing
-- End-to-end workflows
-
-#### UI/UX Testing (`Phase 10.3`)
-- Automated UI testing
-- User interaction simulation
-- Visual regression testing
-
-#### Performance Testing (`Phase 10.4`)
-- Rendering benchmarks
-- Memory profiling
-- CPU usage monitoring
-- Frame rate testing
-
-#### Accessibility Testing (`Phase 10.5`)
-- Screen reader testing
-- Keyboard navigation testing
-- AT-SPI compliance verification
-
----
-
-## 📚 Documentation (Phase 11)
-
-### Comprehensive Documentation Suite
-
-#### Developer Documentation (`Phase 11.1`)
-- **Location**: `/var/www/rustux.com/prod/apps/gui/docs/documentation/developer.md`
-- Getting started guides
-- Architecture deep dives
-- Development guides (custom widgets, extensions)
-- API documentation standards
-- Testing and debugging guides
-- Contributing guidelines
-
-#### User Documentation (`Phase 11.2`)
-- **Location**: `/var/www/rustux.com/prod/apps/gui/docs/documentation/user.md`
-- Getting started with Rustica OS
-- Desktop tour and component guides
-- Application usage instructions
-- Customization guides (themes, wallpapers, shortcuts)
-- Mobile guide (touch gestures, on-screen keyboard)
-- Troubleshooting common issues
-
-#### API Documentation (`Phase 11.3`)
-- **Location**: `/var/www/rustux.com/prod/apps/gui/docs/documentation/api.md`
-- Rustdoc standards with examples
-- D-Bus API documentation for all interfaces
-- Wayland protocol extensions
-- Data format specifications
-- API versioning and deprecation policies
-
-#### Architecture Documentation (`Phase 11.4`)
-- **Location**: `/var/www/rustux.com/prod/apps/gui/docs/architecture/system-architecture.md`
-- High-level system architecture
-- Component interaction diagrams
-- Data flow between components
-- Threading model and memory management
-- Security architecture
-- Protocol architecture (Wayland, D-Bus)
-- Design decisions and trade-offs
-- Performance characteristics
-
-#### Contributing Guidelines (`Phase 11.5`)
-- **Location**: `/var/www/rustux.com/prod/apps/gui/docs/contributing.md`
-- Getting started setup
-- Development workflow
-- Code standards (Rust style, performance, security)
-- Commit message format (Conventional Commits)
-- Pull request process
-- Review process
-- Testing requirements
-- Community guidelines
-
----
-
-## 🌐 Accessibility & Internationalization (Phase 1)
-
-### Accessibility Framework (`Phase 1.1`)
-- AT-SPI 2.0 implementation
-- Screen reader support
-- Magnifier support
-- On-screen keyboard
-- High contrast mode
-
-### IME & Multilingual Text (`Phase 1.2`)
-- Input Method Framework (ibus/fcitx)
-- CJK input methods
-- Right-to-left text support
-- Input composition
-
-### Hi-DPI & Scaling (`Phase 1.3`)
-- Fractional scaling support
-- Per-monitor DPI awareness
-- Touch scaling optimization
-
----
-
-## 🏗️ Architecture Specifications (Phase 0)
-
-### Core Design Decisions
-
-- **Display Stack**: Wayland compositor (no X11)
-- **Rendering Backend**: GPU-accelerated (EGL/Vulkan)
-- **Toolkit Strategy**: Rust + GTK for shell, pure Rust for custom components
-- **Process Model**: Multi-process for security (UI, Web, Network, GPU processes)
-- **Event Model**: Wayland protocol with Smithay
-- **Window Lifecycle**: XDG shell protocol
-- **Theme System**: Material Design 3 with CSS-like styling
-- **Error Handling**: Panic recovery, crash reporting
-- **State Persistence**: JSON-based state storage
-
----
-
-## 🔒 Security Architecture
-
-### Multi-Process Isolation
-- **UI Process**: Main browser/application (sandboxed)
-- **Web Process**: Per-tab rendering (sandboxed)
-- **Network Process**: HTTP requests (sandboxed)
-- **GPU Process**: Graphics/compositing (sandboxed)
-
-### Sandboxing
-- Landlock for filesystem access control
-- bubblewrap for process isolation
-- Seccomp filters for syscall restriction
-
-### Security Policies
-- Wayland protocol security (no pointer grabs)
-- D-Bus policy filtering
-- Portal-based permission requests
-- HTTPS-only mode
-- Certificate pinning
-- Content Security Policy
-
----
-
-## 📱 Mobile Mode Details
-
-### Detection Methods
-
-The browser automatically detects mobile mode through three methods:
-
-1. **Environment Variable**: `RUSTICA_MOBILE_MODE=true`
-2. **Touch Device**: `RUSTICA_TOUCH_DEVICE=true`
-3. **Screen Size**: Automatically if screen < 768px width or height
-
-### Desktop vs Mobile UI Comparison
-
-| Feature | Desktop | Mobile |
-|---------|---------|--------|
-| Navigation | Top bar with URL + buttons | Top bar + bottom bar |
-| Button Size | Normal (IconSize::Button) | Large (IconSize::LargeToolbar) |
-| Status Bar | Yes | No |
-| URL Bar Height | Default | 40px (larger for touch) |
-| Touch Gestures | Mouse/keyboard | Swipe, pinch, tap |
-| User Agent | Desktop (X11/Linux) | Mobile (Android 13) |
-| Scrolling | Standard | Kinetic (momentum) |
-| Spatial Navigation | Disabled | Enabled (D-pad) |
-| Fullscreen Support | Standard | Enhanced |
-
-### Mobile User Agent
-
-```
-Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko)
-Chrome/120.0.0.0 Mobile Safari/537.36 RusticaMobile/1.0
-```
-
-### Mobile Settings
-
-- ✅ Smooth scrolling enabled
-- ✅ Spatial navigation (D-pad support)
-- ✅ Media playback without user gesture
-- ✅ Fullscreen support
-- ✅ Kinetic scrolling
-- ✅ Touch-optimized buttons (40px minimum)
-- ✅ Swipe navigation (left/right)
-- ✅ Pinch-to-zoom support
-- ✅ Responsive viewport meta tag handling
-
----
-
-## 🛠️ CLI Utilities & Core System
-
-### CLI Tools Implemented (18 utilities)
-
-| Tool | Description | Location |
-|------|-------------|----------|
-| `rpg` | **Live update system** with atomic operations, rollback, Ed25519 signatures | `rustica/update-system/` |
-| `pkg-compat` | Backward compatibility wrapper (pkg → rpg) | `cli/pkg-compat/` |
-| `svc` | Service manager (systemd-style init) | `cli/svc/` |
-| `ip` | Network configuration (netlink-based) | `cli/ip/` |
-| `login` | User login utility | `cli/login/` |
-| `ping` | ICMP echo utility | `cli/ping/` |
-| `fwctl` | Firewall control (nftables frontend) | `cli/fwctl/` |
-| `installer` | OS installer with multi-architecture support | `cli/installer/` |
-| `tar` | Archive utility with gzip compression | `cli/tar/` |
-| `dnslookup` | DNS lookup utility | `cli/dnslookup/` |
-| `editor` | Text editor (nano-like) | `cli/editor/` |
-| `ssh` | SSH client wrapper | `cli/ssh/` |
-| `logview` | System log viewer and crash reporter | `cli/logview/` |
-| `capctl` | Capability control - maps kernel objects to file permissions | `cli/capctl/` |
-| `sbctl` | Secure boot control - key generation and binary signing | `cli/sbctl/` |
-| `bootctl` | UEFI boot entry management | `cli/bootctl/` |
-| `apt` | apt compatibility wrapper | `cli/apt/` |
-| `apt-get` | apt-get compatibility wrapper | `cli/apt-get/` |
-
-### System Tools
-
-**Capability Control (`capctl`)**:
-- 16 capabilities across 7 categories (file, directory, network, system, device, process, package)
-- Extended attributes (xattr) based storage
-- Commands: `get`, `set`, `remove`, `list`, `from-perms`, `database`, `init-db`
-
-**Secure Boot Control (`sbctl`)**:
-- Creates and manages secure boot keys (PK, KEK, DB)
-- Signs kernels and bootloaders
-- Commands: `create-keys`, `sign`, `verify`, `list-keys`, `export-key`, `sign-kernels`, `status`
-
-**UEFI Boot Management (`bootctl`)**:
-- Lists and manages UEFI boot entries
-- Detects other operating systems
-- Commands: `list`, `set-order`, `add`, `remove`, `set-next-boot`, `detect-os`, `export`, `status`
-
-**Package Manager (`rpg`)** - Live Update System:
-- **Location**: `/var/www/rustux.com/prod/rustica/update-system/`
-- **Features**:
-  - Live updates without system interruption
-  - Atomic package operations with versioned filesystem
-  - Full rollback support to any previous version
-  - Background download and installation
-  - Ed25519 digital signature verification
-  - SHA-256 checksum verification
-  - Multiple repository sources with automatic failover
-  - Transaction-based operations (install, remove, upgrade, rollback)
-  - Support for kernel, system, and application packages
-- **Package Format**: `.rpg` tar.gz archives with metadata.json
-- **Filesystem Layout**: Versioned directories (`/system/vX.Y.Z/`, `/apps/<name>/<version>/`)
-- **Activation**: Atomic symlink swaps (POSIX rename)
-- **Configuration**: `/etc/rpg/sources.list` for repository sources
-- **Registry**: `/var/lib/rpg/registry.json` for package state
-- **Commands**: `update`, `install`, `remove`, `rollback`, `status`, `list`, `sources`
-
-**System Installer (`rustux-install`)**:
-- Filesystem selection: **ext4**, **F2FS** (mobile-optimized), **btrfs**
-- Profile-based package installation (Desktop, Laptop, Mobile, Server, Minimal)
-- **F2FS auto-selection for mobile devices**
-- Network configuration
-- Device-type detection (desktop, laptop, mobile)
-- UEFI boot support with multi-boot configuration
-
----
-
-## 🎯 Key Features
-
-### Live Update System
-- **Atomic Package Operations**: Never overwrites active files
-- **Versioned Filesystem**: `/system/vX.Y.Z/` and `/apps/<name>/<version>/` layout
-- **Full Rollback Support**: One-command rollback to any previous version
-- **Live Updates**: Applications update while running
-- **Background Downloads**: Non-intrusive update downloads
-- **Cryptographic Security**: Ed25519 signatures + SHA-256 verification
-- **Multiple Sources**: Configurable repositories with automatic failover
-- **Transaction-Based**: ACID-like properties for all operations
-
-### Capability-Based Security
-- Kernel object model mapped to file permissions
-- Packages declare capability requirements
-- Capability levels (0-255) for privilege escalation
-- Extended attributes for storing file capabilities
-- Integration with package manager
-
-### Secure Boot Support
-- Complete key infrastructure (PK, KEK, DB)
-- Kernel and bootloader signing
-- Integration with sbsign/sbverify tools
-- ESP key export for firmware enrollment
-
-### Filesystem Options
-- **ext4**: Stable, compatible (default for Server/Minimal)
-- **F2FS**: Flash-Friendly File System (default for Mobile)
-- **btrfs**: Advanced features with snapshots (default for Desktop/Laptop)
-- Automatic filesystem recommendation based on profile
-
-### Cross-Compilation Support
-- **amd64** (x86_64-unknown-linux-gnu) - ✅ Fully supported
-- **arm64** (aarch64-unknown-linux-gnu) - ✅ Built
-- **riscv64** (riscv64gc-unknown-linux-gnu) - ✅ Built
-- Build script: `build-all-archs.sh`
-
----
-
-## 📂 Project Structure
-
 ```
 /var/www/rustux.com/prod/
-├── apps/
-│   ├── cli/              # CLI applications (18 tools)
-│   │   ├── pkg-compat/   # Backward compatibility wrapper
-│   │   ├── capctl/       # Capability control
-│   │   ├── sbctl/        # Secure boot management
-│   │   ├── bootctl/      # UEFI boot management
-│   │   ├── installer/    # OS installer
-│   │   ├── svc/          # Service manager
-│   │   ├── ip/           # Network config
-│   │   ├── login/        # Login utility
-│   │   ├── ping/         # ICMP echo
-│   │   ├── fwctl/        # Firewall control
-│   │   ├── tar/          # Archive utility
-│   │   ├── dnslookup/    # DNS lookup
-│   │   ├── editor/       # Text editor
-│   │   ├── ssh/          # SSH client
-│   │   ├── logview/      # Log viewer
-│   │   ├── apt/          # apt compatibility wrapper
-│   │   └── apt-get/      # apt-get compatibility wrapper
-│   ├── gui/              # GUI applications
-│   │   ├── rustica-comp/ # Wayland compositor
-│   │   ├── rustica-web/  # Web browser with mobile mode ✨
-│   │   └── docs/         # GUI documentation
-│   │       ├── documentation/
-│   │       │   ├── developer.md
-│   │       │   ├── user.md
-│   │       │   └── api.md
-│   │       ├── architecture/
-│   │       │   └── system-architecture.md
-│   │       ├── specifications/
-│   │       │   └── browser.md
-│   │       └── contributing.md
-│   ├── libs/             # Shared libraries
-│   │   ├── rutils/       # Rust utilities
-│   │   └── netlib/       # Network library
-│   ├── Cargo.toml        # Workspace configuration
-│   └── build-all-archs.sh
-├── kernel/               # RUSTUX microkernel
-└── rustica/              # Distribution platform
-    ├── docs/
-    │   ├── rustica_checklist.txt
-    │   └── README.md      # This file
-    ├── todo.md
-    └── update-system/    # Live update system (RPG) ✨ NEW
-        ├── rpg-core/     # Core library
-        ├── rpg/          # CLI tool
-        └── update-daemon/ # Background service
+├── loader/              # UEFI transition kernel + live image tooling
+│   ├── kernel-efi/         # Monolithic UEFI kernel (Phase 6 validated)
+│   ├── uefi-loader/        # UEFI bootloader (loads kernel.efi)
+│   ├── userspace/          # Rust userspace test programs
+│   ├── build-live-image.sh # Live USB build script
+│   └── target/            # Built kernel.efi binary
+├── rustux/               # Canonical microkernel (modular architecture)
+│   └── src/               # Microkernel source code
+├── rustica/              # Userspace OS distribution
+│   ├── docs/              # Documentation (BUILD.md, IMAGE.md, PLAN.md)
+│   └── test-userspace/    # C programs (shell, init, tests)
+└── apps/                # CLI tools and GUI applications
+```
+
+**Note on Kernel Architecture:**
+- `loader/kernel-efi/` - **Transition kernel** (monolithic UEFI application)
+  - Used to validate Phase 6 features (live boot, PS/2 keyboard, framebuffer, shell)
+  - Single binary for easier live USB testing
+  - Will be retired after validated subsystems migrate to microkernel
+
+- `rustux/` - **Canonical microkernel** (modular architecture)
+  - The "real" Rustux kernel with proper separation of concerns
+  - Phase 6D will migrate validated subsystems from transition kernel
+  - Target for all future development
+
+---
+
+## Building
+
+### Prerequisites
+
+```bash
+# Rust toolchain (UEFI target)
+rustup target add x86_64-unknown-uefi
+
+# GCC for cross-compiling userspace C programs
+apt install gcc-x86-64-linux-gnu
+
+# Image creation tools
+apt install parted dosfstools coreutils
+```
+
+### Build Steps
+
+#### 1. Build Transition Kernel
+
+```bash
+cd /var/www/rustux.com/prod/loader/kernel-efi
+
+# Build UEFI kernel with release optimizations
+cargo build --release --target x86_64-unknown-uefi
+```
+
+**Output:** `target/x86_64-unknown-uefi/release/kernel.efi`
+
+#### 2. Build Userspace Programs
+
+```bash
+cd /var/www/rustux.com/prod/rustica/test-userspace
+
+# Build shell (C program, static linking, no stdlib)
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o shell.elf
+
+# Build init (first userspace process)
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o init.elf
+
+# Build test programs
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector hello.c -o hello.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector counter.c -o counter.elf
+```
+
+**Note:** The kernel's `build.rs` automatically embeds these binaries into the ramdisk during compilation.
+
+#### 3. Build Live USB Image
+
+```bash
+cd /var/www/rustux.com/prod
+
+# Use wrapper script (delegates to loader/build-live-image.sh)
+chmod +x build-live-image.sh
+./build-live-image.sh
+```
+
+**Output:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
+
+---
+
+## Live USB Image Specifications
+
+| Property | Value |
+|----------|-------|
+| **Format** | Raw disk image |
+| **Partition Table** | GPT |
+| **Partition 1** | EFI System Partition (ESP) |
+| **Filesystem** | FAT32 |
+| **Size** | 128 MB |
+| **Boot Path** | `/EFI/BOOT/BOOTX64.EFI` |
+| **Boot Method** | UEFI direct boot |
+
+### Directory Structure (Inside Image)
+
+```
+[EFI System Partition]
+└── EFI/
+    └── BOOT/
+        └── BOOTX64.EFI    (kernel.efi - the kernel)
+```
+
+### Embedded Ramdisk (Inside Kernel)
+
+The kernel binary contains an embedded ramdisk with:
+
+```
+/bin/
+├── init       (PID 1 - first process)
+├── shell      (PID 2 - interactive shell)
+├── hello      (test program)
+└── counter    (test program)
 ```
 
 ---
 
-## 🚀 Building
+## Dracula Theme (MANDATORY INVARIANT)
 
-### CLI Tools
-```bash
-# Build all CLI tools for native architecture
-cargo build --release --workspace
+The Dracula color palette is the default system theme and must survive:
 
-# Build specific tool
-cargo build --release -p rustux-capctl
-cargo build --release -p rustux-sbctl
-cargo build --release -p rustux-bootctl
+- Kernel rebuilds
+- CLI refactors
+- Framebuffer rewrites
+- GUI introduction later
 
-# Build for specific architecture (x86_64)
-cargo build --release --target x86_64-unknown-linux-gnu
-
-# Build all tools for all architectures
-./build-all-archs.sh
+**Canonical Dracula Colors:**
 ```
-
-### Live Update System (RPG)
-```bash
-# Navigate to update system directory
-cd /var/www/rustux.com/prod/rustica/update-system
-
-# Build all components
-cargo build --release
-
-# Build specific component
-cargo build --release -p rpg-core
-cargo build --release -p rpg
-cargo build --release -p update-daemon
-
-# Run the CLI
-./target/release/rpg --help
-./target/release/rpg status
-./target/release/rpg update --check-only
-
-# Run the daemon
-./target/release/rustic-update-daemon
-```
-
-### GUI Applications
-```bash
-# Build Wayland compositor
-cargo build --release -p rustica-comp
-
-# Build web browser
-cargo build --release -p rustica-web
-
-# Binary locations
-./target/release/rustica-comp
-./target/release/rustica-web
-```
-
-### Build Browser for Mobile Mode
-```bash
-# Normal build (desktop mode, auto-detects screen size)
-cargo build --release -p rustica-web
-
-# Force mobile mode
-RUSTICA_MOBILE_MODE=1 cargo build --release -p rustica-web
+FG_DEFAULT = #F8F8F2  (r: 248, g: 248, b: 242)
+BG_DEFAULT = #282A36  (r: 40, g: 42, b: 54)
+CYAN       = #8BE9FD  (r: 139, g: 233, b: 253)
+PURPLE     = #BD93F9  (r: 189, g: 147, b: 249)
+GREEN      = #50FA7B  (r: 80, g: 250, b: 123)
+RED        = #FF5555  (r: 255, g: 85, b: 85)
+ORANGE     = #FFB86C  (r: 255, g: 184, b: 108)
+YELLOW     = #F1FA8C  (r: 241, g: 250, b: 140)
 ```
 
 ---
 
-## 💡 Quick Start Examples
+## Known Issues
 
-### Package Management
-```bash
-# Check for available updates
-rpg update --check-only
+### Keyboard IRQ Not Delivering (Active Investigation)
 
-# Update all packages
-rpg update
+**Symptoms:**
+- Green line appears (IOAPIC initialized)
+- `int 33` test will confirm if IDT entry is correct
+- If pixel changes on boot = IDT/handler works, problem is IRQ routing
+- If nothing happens = IDT/gate type/selector is broken
 
-# Install a package
-rpg install firefox
+**Attempts So Far:**
+1. ✅ Fixed IOAPIC trigger mode (edge→level, high→low)
+2. ✅ Enabled IA32_APIC_BASE MSR (bit 11)
+3. ✅ Corrected LAPIC register offsets
+4. ✅ Verified Local APIC EOI target
 
-# Install specific version
-rpg install firefox --version 120.0.0
+**Possible Remaining Issues:**
+- Interrupt flag (IF) not set at runtime
+- TPR blocking IRQs
+- IDT entry type/selector incorrect
+- PS/2 controller not actually generating IRQs
 
-# List packages
-rpg list
-
-# Remove package
-rpg remove firefox
-
-# Rollback to previous version
-rpg rollback firefox
-
-# Check system status
-rpg status --detailed
-
-# Manage repository sources
-rpg sources list
-rpg sources add mirror https://mirror.example.com/apps 50
-```
-
-### Capability Management
-```bash
-capctl list
-capctl get /usr/bin/sudo
-capctl set /usr/bin/myapp file_execute,net_bind
-```
-
-### Secure Boot
-```bash
-sbctl status
-sbctl create-keys
-sbctl sign /boot/vmlinuz-linux
-sbctl sign-kernels
-```
-
-### UEFI Boot Management
-```bash
-bootctl list
-bootctl detect-os
-bootctl set-order 0001,0002,0003
-```
-
-### Web Browser
-```bash
-# Desktop mode (auto-detected based on screen size)
-rustica-web
-
-# Force mobile mode (for testing on desktop)
-RUSTICA_MOBILE_MODE=true rustica-web
-
-# Force mobile mode with touch detection
-RUSTICA_TOUCH_DEVICE=true rustica-web
-```
-
-### Installation
-```bash
-sudo rustux-install --auto --device /dev/sda
-sudo rustux-install  # Interactive mode
-```
+**Next Debug Steps:**
+1. Check if `int 33` triggers the handler (test IDT)
+2. Verify `sti` is called after ExitBootServices
+3. Add direct port 0x64/0x60 polling test
+4. May need UEFI SimpleTextInput fallback if PS/2 is dead
 
 ---
 
-## 📖 Documentation
+## Phase 6 Summary
 
-### GUI Documentation
-- **Developer Guide**: `gui/docs/documentation/developer.md`
-- **User Guide**: `gui/docs/documentation/user.md`
-- **API Reference**: `gui/docs/documentation/api.md`
-- **Architecture**: `gui/docs/architecture/system-architecture.md`
-- **Browser Spec**: `gui/docs/specifications/browser.md`
-- **Contributing**: `gui/docs/contributing.md`
+### Completed (6A-6C)
 
-### System Documentation
-- `rustica_checklist.txt` - Full implementation checklist
-- `todo.md` - Task documentation and implementation notes
-- Individual tool documentation in respective `cli/*/` directories
+- **6A: Input Subsystem** - PS/2 keyboard driver with scancode conversion, modifier tracking, circular buffer
+- **6B: Display Subsystem** - Framebuffer driver, PSF2 font (8x16), text console, scrolling, Dracula colors
+- **6C: Interactive Shell** - C shell with built-in commands (help, clear, echo, ps, exit), Dracula theme, program spawning
+
+### In Progress (6D)
+
+- **6D: Stability & UX** - Troubleshooting keyboard IRQ delivery to CPU
+- **6E: Live Boot Media** - Build scripts and image creation (complete, awaiting IRQ fix)
 
 ---
 
-## 🎨 GUI Features
+## Planned Features (Phase 7+)
 
-### Desktop Environment
-- **Wayland Compositor**: Modern display server with GPU acceleration
-- **Panel**: Top panel with app menu and system tray
-- **Dock**: Application launcher and switcher
-- **Notifications**: Modern notification system
-- **Settings**: System configuration application
-- **Terminal**: Feature-rich terminal emulator
-- **File Manager**: Modern file browser
-- **Text Editor**: Lightweight text editing
-- **Screenshot Tool**: Screen capture utility
-
-### Mobile Features
-- **Touch Gesture System**: Swipe, pinch, tap
-- **On-Screen Keyboard**: Full virtual keyboard
-- **Mobile UI Components**: Touch-optimized widgets
-- **Sensor Integration**: Accelerometer, gyroscope
-- **Battery Optimization**: Power management
-- **Mobile Browser**: Touch-optimized web browsing
-
-### Testing & Quality
-- **Unit Tests**: Component-level testing
-- **Integration Tests**: System-level testing
-- **UI/UX Tests**: User interface testing
-- **Performance Tests**: Benchmarking and profiling
-- **Accessibility Tests**: AT-SPI compliance testing
+- **7A: USB HID Driver** - Keyboard + mouse support via USB
+- **7B: GUI Server** - Single-process window manager (early Mac OS style)
+- **7C: GUI Client Library** - librustica_gui for building GUI applications
 
 ---
 
-## 🔮 Future Roadmap
+## System Requirements
 
-While all core functionality is complete, ongoing enhancements include:
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **Architecture** | x86_64 (AMD64) | x86_64 (AMD64) |
+| **Boot** | UEFI 2.0 | UEFI 2.3+ |
+| **RAM** | 512 MB | 1 GB |
+| **Storage** | 128 MB (USB) | 4 GB |
+| **Input** | PS/2 Keyboard | PS/2 or USB HID* |
 
-- Additional desktop applications (image viewer, music player, etc.)
-- Enhanced mobile gestures and optimizations
-- Additional accessibility features
-- Performance optimizations
-- Extended theme options
-- Additional language packs
-- Cloud integration features
-
----
-
-## 📄 License
-
-MIT License - See LICENSE file for details
+\* USB HID support planned for Phase 7
 
 ---
 
-## 🙏 Credits
+## Documentation
 
-**Rustica OS** is built with:
-- Rust programming language
-- Smithay (Wayland compositor framework)
-- WebKitGTK (browser engine)
-- GTK3 (UI toolkit)
-- And many other open-source projects
+- **[BUILD.md](rustica/docs/BUILD.md)** - Live USB build instructions
+- **[IMAGE.md](rustica/docs/IMAGE.md)** - System architecture and boot flow
+- **[PLAN.md](rustica/docs/PLAN.md)** - Development roadmap with detailed phase specs
+- **[PASTE.md](rustica/docs/PASTE.md)** - Keyboard IRQ debugging notes
 
 ---
 
-*Last updated: January 22, 2025*
+## Git Repositories
 
-**Status:** ✅ All phases (0-12) complete - Production ready (userspace)
-**Kernel:** ✅ Phase 4 Complete - Userspace execution with syscalls (in development)
+- **Kernel:** https://github.com/gitrustux/rustux
+- **Transition Kernel:** https://github.com/gitrustux/rustux-efi
+- **OS Distribution:** https://github.com/gitrustux/rustica
+- **Applications:** https://github.com/gitrustux/apps
+
+---
+
+## License
+
+MIT License - See LICENSE file for details.
+
+---
+
+*Last Updated: January 23, 2025*
+**Status:** Phase 6A-6C Complete | 6D IRQ debugging in progress
