@@ -1,10 +1,10 @@
 # Rustux OS - Development Plan
 
-**Last Updated:** 2025-01-22 - RESOLVED: Working QEMU 7.2 + EDK2 Configuration Found
-**Current Status:** 🟢 KERNEL BOOTS - QEMU 7.2.0 + EDK2 works, system QEMU 8.2.2 broken
+**Last Updated:** 2025-01-23 - Phase 5 COMPLETE, Phase 6A-6C COMPLETE, Phase 6D-7 PLANNED
+**Current Status:** 🟢 INTERACTIVE SHELL RUNNING - PS/2 keyboard, framebuffer console, Dracula theme, init → shell boot
 **Kernel Location:** `/var/www/rustux.com/prod/rustux/`
-**Commit:** 55efe75 "Fix user page table isolation - PT-level crash resolution"
-**Old Kernel (Reference):** `/var/www/rustux.com/prod/kernel/`
+**Userspace/OS Location:** `/var/www/rustux.com/prod/rustica/`
+**Old Installer:** `/var/www/rustux.com/prod/installer/` (OBSOLETE - was for Linux-based OS)
 
 ---
 
@@ -14,1745 +14,2048 @@
 
 ### Required Configuration
 
-| Component | Path | Version | Notes |
-|-----------|------|---------|-------|
-| **QEMU** | `/usr/local/bin/qemu-system-x86_64` | 7.2.0 | Custom-built from source |
-| **Firmware** | `/usr/local/share/qemu/edk2-x86_64-code.fd` | Built-in | EDK2 firmware bundled with QEMU 7.2 |
-| **VARS File** | `/usr/share/OVMF/OVMF_VARS_4M.fd` | System | OVMF variables store |
-| **Machine Type** | `-machine q35` | - | Q35 chipset |
+| Component | Path/Version | Notes |
+|-----------|--------------|-------|
+| **QEMU** | `/usr/local/bin/qemu-system-x86_64` | 7.2.0 (source-built) |
+| **Firmware** | `/usr/share/qemu/OVMF.fd` | System OVMF |
+| **Machine Type** | Default | - |
 
-### ❌ BROKEN CONFIGURATION (Do Not Use)
+### ❌ BROKEN CONFIGURATION
 
 - System QEMU 8.x (`/usr/bin/qemu-system-x86_64` version 8.2.2)
-- System OVMF (`/usr/share/ovmf/OVMF.fd`)
-- `-bios` flag (use pflash instead)
-
-### Critical Warnings
-
-**❌ System QEMU 8.x + system OVMF does NOT load EFI applications correctly in this environment.**
-**❌ Lack of debug output in those configurations is NOT a kernel bug.**
-
-### Mandatory Rule
-
-**All kernel debugging, development, and validation MUST assume the above environment.**
-
-### Why This Matters
-
-This prevents circular debugging loops where missing debug output is incorrectly diagnosed as a kernel regression, when it's actually an environment failure.
-
-**Before debugging kernel code for "no output":**
-1. Verify QEMU version (`/usr/local/bin/qemu-system-x86_64 --version`)
-2. Verify firmware path (`ls -la /usr/local/share/qemu/edk2-x86_64-code.fd`)
-3. Test with boot_probe.efi (tiny EFI binary that writes '!' to port 0xE9)
-
-**If boot_probe.efi doesn't run:**
-- Don't touch kernel code
-- Don't debug page tables
-- Fix the environment first
 
 ---
 
-## 🔴 PREVIOUSLY CONFIRMED: QEMU 7.2.0 + System OVMF Environment Issue (RESOLVED)
+## 🤫 Silent Boot Phase (CRITICAL INVARIANT)
 
-### Summary
+**From `efi_main` until `ExitBootServices()` succeeds, the kernel MUST NOT:**
 
-**This environment cannot execute EFI applications.** Both the custom kernel AND a known-good EFI binary (GRUB) produce zero output.
+- Use port I/O (including debug port 0xE9)
+- Use global logging macros (`println!`, `debug_print!`, etc.)
+- Call UEFI console services more than once
+- Use heap allocations
 
-### Test Results
+**Silent Boot Phase ends ONLY when:**
 
-| Test Case | Result | Details |
-|-----------|--------|---------|
-| Custom kernel EFI binary | 0 bytes output | No debug console output |
-| **GRUB EFI (known-good)** | **0 bytes output** | No serial or debug output |
-| OVMF firmware file | Valid | 4MB, correct FV header |
-| QEMU process | Starts correctly | PID exists, stays running |
-| QEMU version | 7.2.0 | Standard release |
+1. `ExitBootServices()` returns successfully
+2. Page tables are stable
+3. Interrupts are explicitly disabled
 
-### Critical Test: GRUB EFI Binary
+Then AND ONLY THEN:
+- Enable port 0xE9 debug output
+- Enable kernel logger
 
-**Hypothesis:** If the kernel was broken, a known-good EFI binary (GRUB bootloader) should work.
+---
 
-**Test:**
-```bash
-# Create test image with GRUB EFI binary
-dd if=/dev/zero of=/tmp/test-efi.img bs=1M count=64
-mkfs.fat -F 32 /tmp/test-efi.img
-mkdir -p /tmp/test-efi/EFI/BOOT
-cp /usr/lib/grub/x86_64-efi/monolithic/grubx64.efi /tmp/test-efi/EFI/BOOT/BOOTX64.EFI
-mcopy -i /tmp/test-efi.img -s /tmp/test-efi/EFI ::
+## 📋 Phase 4: Userspace & Process Execution ✅ COMPLETE
 
-# Run QEMU with GRUB
-qemu-system-x86_64 \
-    -bios /usr/share/ovmf/OVMF.fd \
-    -drive if=ide,file=/tmp/test-efi.img,format=raw \
-    -nographic \
-    -serial file:/tmp/grub-test-serial.log \
-    -debugcon file:/tmp/grub-test-debug.log \
-    -m 512M
-```
+### Phase 4A: ELF Loading & Heap Allocator ✅
+- Per-process address spaces
+- 64MB heap allocator with MIN_BLOCK_SIZE=1024
+- ELF binary loading with segment mapping
+- VMO (Virtual Memory Object) abstraction
 
-**Result:** 0 bytes in both serial and debug logs.
+### Phase 4B: First CPL3 Instruction ✅
+- Page table isolation (kernel vs userspace)
+- Per-process PML4 creation
+- PML4 ownership rules enforced
+- Canary reads before CR3 load
+- CR3 switching with canary verification
+- IRETQ to userspace
+- TSS RSP0 configuration
+- User segments configured
+- Silent Boot Phase enforced
 
-**Conclusion:** The kernel code is not the problem. The QEMU 7.2.0 + OVMF environment does not execute EFI applications.
+### Phase 4C: Syscalls & Userspace Memory ✅
+- `int 0x80` syscall interface
+- Syscall dispatch table
+- sys_exit() - process termination
+- sys_debug_write() - kernel-mediated debug output
+- Argument/return handling via interrupt frame
 
-### Verified Components
+---
 
-- ✅ EFI binary format valid (PE/COFF)
-- ✅ EFI path correct (`/EFI/BOOT/BOOTX64.EFI`)
-- ✅ FAT32 disk image valid
-- ✅ OVMF firmware file valid (4MB, `_FVH` header present)
-- ✅ QEMU process starts and stays running
-- ✅ Debug console port 0xE9 output code present in kernel
-- ✅ **Known-good EFI binary (GRUB) tested - also produces no output**
+## 📋 Phase 5: Process Management & Essential Syscalls (NEXT)
 
-### What Cannot Be Tested (Due to Environment Blocker)
+### Overview
 
-1. **PMM Call Numbering Debug Output** - Added to `src/mm/pmm.rs` but cannot verify:
-   - `ALLOC_CALL_COUNT` atomic counter
-   - Call entry/exit markers showing which allocation (1, 2, 3...) hangs
-   - Exhaustion detection with distinctive halt pattern
+Build on Phase 4's userspace execution foundation to add:
+- Proper I/O syscalls for userspace programs
+- Process table and scheduler for multiple processes
+- Embedded filesystem for files and programs
+- Multi-process demo showing kernel capabilities
 
-2. **Stack Reservation Fix** - Kernel stack pages (0x200000-0x240000) reserved in PMM but cannot verify:
-   - Allocations no longer overlap with stack
-   - Page table allocation succeeds
+### Phase 5A: Core Syscall Interface (Week 1-2)
 
-3. **Userspace Page Table Mapping** - The original hang cannot be debugged:
-   - Which PMM call hangs (1st, 2nd, 3rd?)
-   - Whether PMM is exhausted
-   - Whether there's an infinite loop in bitmap scan
+**Goal:** Enable userspace programs to do I/O and get process information
 
-### PMM Call Numbering Implementation (Untestable)
+#### 5A.1: File Descriptor Abstraction
 
 ```rust
-// In src/mm/pmm.rs:
+// src/syscall/fd.rs
 
-/// Global PMM allocation call counter
-static ALLOC_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// File descriptor kinds
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FdKind {
+    Stdin,   // 0: Keyboard input (future)
+    Stdout,  // 1: Kernel debug console (port 0xE9)
+    Stderr,  // 2: Same as stdout for now
+    File {   // 3+: Embedded ramdisk file
+        inode: u32,
+        offset: u64,
+    },
+    Pipe {   // Future: Inter-process communication
+        read_end: bool,
+        pipe_id: u32,
+    },
+}
 
-/// Helper: Print decimal number to debug console
-unsafe fn print_decimal(mut n: usize) {
-    if n == 0 {
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'0', options(nomem, nostack));
+/// File descriptor entry
+#[derive(Debug, Clone)]
+pub struct FileDescriptor {
+    pub kind: FdKind,
+    pub flags: u32,  // O_RDONLY, O_WRONLY, O_RDWR, etc.
+}
+
+/// Per-process file descriptor table
+pub struct FileDescriptorTable {
+    fds: [Option<FileDescriptor>; 256],
+    next_fd: u8,
+}
+
+impl FileDescriptorTable {
+    pub const fn new() -> Self {
+        Self {
+            fds: [None; 256],
+            next_fd: 3,  // Start after stdin/stdout/stderr
+        }
+    }
+
+    pub fn alloc(&mut self, kind: FdKind, flags: u32) -> Option<u8> {
+        if self.next_fd >= 256 {
+            return None;
+        }
+        let fd = self.next_fd;
+        self.fds[fd as usize] = Some(FileDescriptor { kind, flags });
+        self.next_fd += 1;
+        Some(fd)
+    }
+
+    pub fn get(&self, fd: u8) -> Option<&FileDescriptor> {
+        self.fds.get(fd as usize)?.as_ref()
+    }
+
+    pub fn get_mut(&mut self, fd: u8) -> Option<&mut FileDescriptor> {
+        self.fds.get_mut(fd as usize)?.as_mut()
+    }
+
+    pub fn close(&mut self, fd: u8) -> Option<FileDescriptor> {
+        self.fds.get_mut(fd as usize)?.take()
+    }
+}
+```
+
+#### 5A.2: I/O Syscalls
+
+```rust
+// src/syscall/mod.rs
+
+/// Write to file descriptor
+/// sys_write(fd: u8, buf: *const u8, len: usize) -> isize
+fn sys_write(args: SyscallArgs) -> SyscallRet {
+    let fd = args.arg_u8(0);
+    let buf = args.arg_ptr(1) as *const u8;
+    let len = args.arg(2);
+
+    let process = current_process();
+    let fd_table = &process.fd_table;
+
+    let desc = match fd_table.get(fd) {
+        Some(d) => d,
+        None => return error_to_ret_isize(Errno::EBADF),
+    };
+
+    match desc.kind {
+        FdKind::Stdout | FdKind::Stderr => {
+            // Write to kernel debug console (port 0xE9)
+            unsafe {
+                for i in 0..len {
+                    let c = *(buf.add(i));
+                    core::arch::asm!("out dx, al",
+                        in("dx") 0xE9u16,
+                        in("al") c,
+                        options(nomem, nostack)
+                    );
+                }
+            }
+            ok_to_ret_isize(len as isize)
+        }
+        FdKind::Stdin => error_to_ret_isize(Errno::EBADF),  // Can't write to stdin
+        FdKind::File { inode, offset } => {
+            // File writing (Phase 5C)
+            error_to_ret_isize(Errno::EROFS)  // Read-only for now
+        }
+        FdKind::Pipe { .. } => error_to_ret_isize(Errno::ENOSYS),
+    }
+}
+
+/// Read from file descriptor
+/// sys_read(fd: u8, buf: *mut u8, len: usize) -> isize
+fn sys_read(args: SyscallArgs) -> SyscallRet {
+    let fd = args.arg_u8(0);
+    let buf = args.arg_mut_ptr(1) as *mut u8;
+    let len = args.arg(2);
+
+    let process = current_process();
+    let fd_table = &process.fd_table;
+
+    let desc = match fd_table.get(fd) {
+        Some(d) => d,
+        None => return error_to_ret_isize(Errno::EBADF),
+    };
+
+    match desc.kind {
+        FdKind::Stdin => {
+            // Keyboard input (future)
+            error_to_ret_isize(Errno::ENOSYS)
+        }
+        FdKind::Stdout | FdKind::Stderr => error_to_ret_isize(Errno::EBADF),
+        FdKind::File { .. } => {
+            // File reading (Phase 5C)
+            error_to_ret_isize(Errno::ENOSYS)
+        }
+        FdKind::Pipe { .. } => error_to_ret_isize(Errno::ENOSYS),
+    }
+}
+```
+
+#### 5A.3: Memory Management Syscalls
+
+```rust
+/// Map memory into process address space
+/// sys_mmap(addr: Option<usize>, len: usize, prot: u32, flags: u32) -> *mut u8
+fn sys_mmap(args: SyscallArgs) -> SyscallRet {
+    let addr = args.arg_opt(0);
+    let len = args.arg(1);
+    let prot = args.arg_u32(2);  // PROT_READ, PROT_WRITE, PROT_EXEC
+    let flags = args.arg_u32(3); // MAP_PRIVATE, MAP_SHARED, MAP_ANONYMOUS
+
+    let process = current_process();
+    let vmo = process.vmo_create_aligned(len, 4096)?;
+
+    // Map into user address space
+    let vaddr = if let Some(addr) = addr {
+        process.vmo_map_at(vmo, addr, prot)?
+    } else {
+        process.vmo_map(vmo, prot)?
+    };
+
+    ok_to_ret_usize(vaddr)
+}
+
+/// Unmap memory from process address space
+/// sys_munmap(addr: usize, len: usize) -> i32
+fn sys_munmap(args: SyscallArgs) -> SyscallRet {
+    let addr = args.arg(0);
+    let len = args.arg(1);
+
+    let process = current_process();
+    process.vmo_unmap(addr, len)?;
+    ok_to_ret_i32(0)
+}
+```
+
+#### 5A.4: Process Info Syscalls
+
+```rust
+/// Get current process ID
+/// sys_getpid() -> u32
+fn sys_getpid(_args: SyscallArgs) -> SyscallRet {
+    let process = current_process();
+    ok_to_ret_u32(process.pid)
+}
+
+/// Get parent process ID
+/// sys_getppid() -> u32
+fn sys_getppid(_args: SyscallArgs) -> SyscallRet {
+    let process = current_process();
+    ok_to_ret_u32(process.ppid)
+}
+
+/// Yield CPU to scheduler
+/// sys_yield() -> i32
+fn sys_yield(_args: SyscallArgs) -> SyscallRet {
+    scheduler::yield_cpu();
+    ok_to_ret_i32(0)
+}
+
+/// Get process information
+/// sys_process_info(pid: u32, info: *mut ProcessInfo) -> i32
+#[repr(C)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub state: u32,
+    pub rsp: u64,
+    pub rip: u64,
+}
+
+fn sys_process_info(args: SyscallArgs) -> SyscallRet {
+    let pid = args.arg_u32(0);
+    let info_ptr = args.arg_mut_ptr(1) as *mut ProcessInfo;
+
+    let process_table = PROCESS_TABLE.lock();
+    let process = process_table.get(pid)
+        .ok_or(Errno::ESRCH)?;
+
+    unsafe {
+        *info_ptr = ProcessInfo {
+            pid: process.pid,
+            ppid: process.ppid,
+            state: process.state as u32,
+            rsp: process.rsp,
+            rip: process.rip,
+        };
+    }
+
+    ok_to_ret_i32(0)
+}
+```
+
+**Deliverables:**
+- [x] File descriptor abstraction (FdKind, FileDescriptor, FileDescriptorTable) - `src/syscall/fd.rs`
+- [x] sys_write implementation - writes to port 0xE9 debug console
+- [x] sys_read implementation - returns EOF for now
+- [ ] sys_mmap/sys_munmap implementation - deferred to future phase
+- [x] sys_getpid implementation - returns PID 1 placeholder
+- [x] sys_getppid implementation - returns PPID 0 placeholder
+- [x] sys_yield implementation - CPU yield stub
+- [ ] sys_process_info implementation - deferred to future phase
+- [x] Userspace test programs using new syscalls - `test-userspace/hello.c`
+
+**Status:** ✅ Phase 5A COMPLETE - Core syscalls implemented and kernel boots successfully
+
+### Phase 5B: Process Table & Scheduler (Week 3-4)
+
+**Goal:** Support multiple processes with round-robin scheduling
+
+#### 5B.1: Process Table Implementation
+
+```rust
+// src/process/table.rs
+
+use crate::memory::{PhysAddr, VirtAddr};
+use crate::arch::amd64::registers::{Cr3, rflags};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProcessState {
+    Ready,
+    Running,
+    Blocked,
+    Zombie,
+    Dead,
+}
+
+/// Saved CPU state during context switch
+#[repr(C)]
+pub struct SavedState {
+    // General-purpose registers
+    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
+    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rsp: u64,
+    pub r8:  u64, pub r9:  u64, pub r10: u64, pub r11: u64,
+    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+
+    // Control registers
+    pub cr3: u64,
+    pub rflags: u64,
+
+    // Instruction pointers
+    pub rip: u64,
+
+    // Segment selectors
+    pub cs: u64, pub ss: u64,
+
+    // FPU state (512 bytes for FXSAVE)
+    pub fpu: [u8; 512],
+}
+
+/// Process descriptor
+pub struct Process {
+    pub pid: u32,
+    pub ppid: u32,
+    pub state: ProcessState,
+
+    // Address space
+    pub page_table: PhysAddr,
+    pub kernel_stack: VirtAddr,
+    pub user_stack: VirtAddr,
+    pub heap_base: VirtAddr,
+    pub heap_size: usize,
+
+    // Execution state
+    pub saved_state: SavedState,
+
+    // Syscall return handling
+    pub syscall_ret: u64,
+
+    // File descriptors
+    pub fd_table: crate::syscall::fd::FileDescriptorTable,
+
+    // Time accounting
+    pub cpu_time: u64,
+    pub sched_time: u64,
+}
+
+pub struct ProcessTable {
+    processes: [Option<Process>; 256],
+    current: Option<u32>,
+    next_pid: u32,
+}
+
+impl ProcessTable {
+    pub const fn new() -> Self {
+        Self {
+            processes: [None; 256],
+            current: None,
+            next_pid: 1,  // PID 0 is kernel
+        }
+    }
+
+    pub fn current(&self) -> Option<&Process> {
+        self.current.and_then(|pid| self.processes[pid as usize].as_ref())
+    }
+
+    pub fn current_mut(&mut self) -> Option<&mut Process> {
+        self.current.and_then(move |pid| self.processes[pid as usize].as_mut())
+    }
+
+    pub fn get(&self, pid: u32) -> Option<&Process> {
+        self.processes.get(pid as usize)?.as_ref()
+    }
+
+    pub fn alloc_pid(&mut self) -> Option<u32> {
+        if self.next_pid >= 256 {
+            return None;
+        }
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        Some(pid)
+    }
+
+    pub fn insert(&mut self, process: Process) {
+        let pid = process.pid;
+        self.processes[pid as usize] = Some(process);
+    }
+
+    pub fn set_current(&mut self, pid: u32) {
+        self.current = Some(pid);
+    }
+}
+
+// Global process table
+use spin::Mutex;
+pub static PROCESS_TABLE: Mutex<ProcessTable> = Mutex::new(ProcessTable::new());
+```
+
+#### 5B.2: Context Switching
+
+```assembly
+# src/arch/amd64/switch.S
+
+# void context_switch(SavedState *prev, SavedState *next, u64 next_cr3)
+# Switches from one process to another
+.global context_switch
+context_switch:
+    # Save current state to prev
+    mov %rax, (%rdi)
+    mov %rbx, 8(%rdi)
+    mov %rcx, 16(%rdi)
+    mov %rdx, 24(%rdi)
+    mov %rsi, 32(%rdi)
+    mov %rbp, 40(%rdi)
+    mov %rsp, 48(%rdi)     # Save RSP
+    leaq 60(%rdi), %rax    # Calculate RDI after push
+    mov %r8, 56(%rdi)
+    mov %r9, 64(%rdi)
+    mov %r10, 72(%rdi)
+    mov %r11, 80(%rdi)
+    mov %r12, 88(%rdi)
+    mov %r13, 96(%rdi)
+    mov %r14, 104(%rdi)
+    mov %r15, 112(%rdi)
+
+    # Save CR3
+    mov %cr3, %rax
+    mov %rax, 120(%rdi)
+
+    # Save RFLAGS
+    pushfq
+    popq %rax
+    mov %rax, 128(%rdi)
+
+    # Save RIP
+    movq $1f, %rax
+    mov %rax, 136(%rdi)
+
+    # Save segments
+    mov %cs, %ax
+    movzwq %ax, %rax
+    mov %rax, 144(%rdi)
+    mov %ss, %ax
+    movzwq %ax, %rax
+    mov %rax, 152(%rdi)
+
+    # Save FPU state
+    fxsave 160(%rdi)
+
+    # Load next CR3
+    mov %rdx, %cr3
+
+    # Restore next state
+    mov (%rsi), %rax
+    mov 8(%rsi), %rbx
+    mov 16(%rsi), %rcx
+    mov 24(%rsi), %rdx
+    mov 32(%rsi), %rsi     # Overwrites RSI! Use saved value
+    mov 40(%rsi), %rbp
+    mov 48(%rsi), %rsp     # Restore RSP
+    mov 56(%rsi), %r8
+    mov 64(%rsi), %r9
+    mov 72(%rsi), %r10
+    mov 80(%rsi), %r11
+    mov 88(%rsi), %r12
+    mov 96(%rsi), %r13
+    mov 104(%rsi), %r14
+    mov 112(%rsi), %r15
+
+    # Restore RFLAGS
+    mov 128(%rsi), %rax
+    pushq %rax
+    popfq
+
+    # Restore segments
+    mov 144(%rsi), %ax
+    mov %ax, %cs
+    mov 152(%rsi), %ax
+    mov %ax, %ss
+
+    # Restore FPU state
+    fxrstor 160(%rsi)
+
+    # Restore RIP
+    mov 136(%rsi), %rax
+    jmp *%rax
+
+1:  # Return point after context switch
+    ret
+```
+
+```rust
+// src/process/switch.rs
+
+extern "C" {
+    fn context_switch(prev: *mut SavedState, next: *const SavedState, next_cr3: u64);
+}
+
+pub fn switch_to(current: &mut Process, next: &Process) {
+    unsafe {
+        context_switch(
+            &mut current.saved_state as *mut SavedState,
+            &next.saved_state as *const SavedState,
+            next.page_table.as_u64(),
+        );
+    }
+}
+```
+
+#### 5B.3: Round-Robin Scheduler
+
+```rust
+// src/scheduler/mod.rs
+
+use crate::process::{ProcessTable, ProcessState};
+use spin::Mutex;
+use alloc::sync::Arc;
+
+const TIME_SLICE_MS: u64 = 10;
+
+pub struct Scheduler {
+    pub current: Option<u32>,
+    pub queue: alloc::collections::VecDeque<u32>,
+}
+
+impl Scheduler {
+    pub const fn new() -> Self {
+        Self {
+            current: None,
+            queue: alloc::collections::VecDeque::new(),
+        }
+    }
+
+    pub fn schedule(&mut self, process_table: &mut ProcessTable) {
+        // Mark current as Ready if it was Running
+        if let Some(pid) = self.current {
+            if let Some(process) = process_table.get_mut(pid) {
+                if process.state == ProcessState::Running {
+                    process.state = ProcessState::Ready;
+                }
+            }
+        }
+
+        // Find next runnable process
+        let next_pid = self.find_next_runnable(process_table);
+
+        if let Some(pid) = next_pid {
+            self.current = Some(pid);
+            process_table.set_current(pid);
+
+            let process = process_table.get_mut(pid).unwrap();
+            process.state = ProcessState::Running;
+        }
+    }
+
+    fn find_next_runnable(&self, process_table: &ProcessTable) -> Option<u32> {
+        // Simple round-robin: iterate through all PIDs
+        for pid in 1..256 {
+            if let Some(process) = process_table.get(pid) {
+                if process.state == ProcessState::Ready {
+                    return Some(pid);
+                }
+            }
+        }
+        None
+    }
+}
+
+pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
+
+/// Timer interrupt handler
+pub fn timer_tick() {
+    let mut scheduler = SCHEDULER.lock();
+    let mut process_table = PROCESS_TABLE.lock();
+
+    scheduler.schedule(&mut process_table);
+
+    // Perform context switch if needed
+    if let Some(current_pid) = scheduler.current {
+        if let Some(next_pid) = scheduler.find_next_runnable(&process_table) {
+            if current_pid != next_pid {
+                let current = process_table.get_mut(current_pid).unwrap();
+                let next = process_table.get(next_pid).unwrap();
+
+                // This will call context_switch assembly
+                crate::process::switch_to(current, next);
+            }
+        }
+    }
+}
+
+/// Yield CPU voluntarily
+pub fn yield_cpu() {
+    timer_tick();
+}
+```
+
+#### 5B.4: Process Spawning Syscall
+
+```rust
+// src/syscall/spawn.rs
+
+use crate::exec::process_loader::load_elf;
+use crate::process::{Process, ProcessState, ProcessTable};
+
+/// Spawn new process
+/// sys_spawn(path: *const u8, argv: *const *const u8) -> u32
+fn sys_spawn(args: SyscallArgs) -> SyscallRet {
+    let path_ptr = args.arg_ptr(0) as *const u8;
+    let argv_ptr = args.arg_ptr(1) as *const *const u8;
+
+    // Read path string (simplified - null-terminated)
+    let path = unsafe {
+        let mut len = 0;
+        while *(path_ptr.add(len)) != 0 {
+            len += 1;
+        }
+        core::slice::from_raw_parts(path_ptr, len)
+    };
+
+    // Get parent process
+    let parent_pid = {
+        let pt = PROCESS_TABLE.lock();
+        pt.current.unwrap()
+    };
+
+    // Create new address space
+    let (page_table, entry_addr) = load_elf(path)?;
+
+    // Allocate kernel stack
+    let kernel_stack = crate::memory::allocate_pages(1)?;
+
+    // Allocate user stack
+    let user_stack = crate::memory::allocate_pages(4)?;
+    let user_stack_top = user_stack.as_u64() + (4 * 4096);
+
+    // Initialize process
+    let pid = {
+        let mut pt = PROCESS_TABLE.lock();
+        let pid = pt.alloc_pid().ok_or(Errno::EAGAIN)?;
+
+        let process = Process {
+            pid,
+            ppid: parent_pid,
+            state: ProcessState::Ready,
+            page_table,
+            kernel_stack,
+            user_stack,
+            heap_base: VirtAddr::new(0),
+            heap_size: 0,
+            saved_state: SavedState::new(entry_addr, user_stack_top),
+            syscall_ret: 0,
+            fd_table: crate::syscall::fd::FileDescriptorTable::new(),
+            cpu_time: 0,
+            sched_time: 0,
+        };
+
+        pt.insert(process);
+        pid
+    };
+
+    ok_to_ret_u32(pid)
+}
+```
+
+**Deliverables:**
+- [ ] Process table implementation (Process, ProcessTable, SavedState)
+- [ ] Context switch assembly (context_switch in switch.S)
+- [ ] Timer-based scheduler (timer_tick, yield_cpu)
+- [ ] sys_spawn implementation
+- [ ] Two-process demo (init spawns child, both run)
+
+### Phase 5C: Embedded Filesystem (Week 5)
+
+**Goal:** Provide files for programs to read/write
+
+#### 5C.1: Ramdisk Structure
+
+```rust
+// src/fs/ramdisk.rs
+
+/// Ramdisk file header (embedded at compile time)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RamdiskFile {
+    pub name_offset: u32,  // Offset to name string
+    pub data_offset: u32,  // Offset to file data
+    pub size: u32,         // File size in bytes
+    pub _pad: u32,
+}
+
+/// Ramdisk superblock
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RamdiskSuperblock {
+    pub magic: u32,        // 0x52555458 ("RUTX")
+    pub num_files: u32,
+    pub files_offset: u32, // Offset to RamdiskFile array
+}
+
+/// Ramdisk filesystem
+pub struct Ramdisk {
+    pub data: &'static [u8],
+    pub superblock: &'static RamdiskSuperblock,
+}
+
+impl Ramdisk {
+    /// Find file by name
+    pub fn find_file(&self, name: &str) -> Option<RamdiskFile> {
+        let files = unsafe {
+            let base = self.data.as_ptr().add(self.superblock.files_offset as usize);
+            let count = self.superblock.num_files as usize;
+            core::slice::from_raw_parts(base as *const RamdiskFile, count)
+        };
+
+        for &file in files {
+            let file_name = unsafe {
+                let base = self.data.as_ptr();
+                let name_ptr = base.add(file.name_offset as usize);
+                let mut len = 0;
+                while *name_ptr.add(len) != 0 {
+                    len += 1;
+                }
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, len))
+            };
+
+            if file_name == name {
+                return Some(file);
+            }
+        }
+        None
+    }
+
+    /// Read file data
+    pub fn read_file(&self, file: &RamdiskFile, buf: &mut [u8]) -> usize {
+        let data_ptr = unsafe {
+            self.data.as_ptr().add(file.data_offset as usize)
+        };
+        let to_copy = core::cmp::min(buf.len(), file.size as usize);
+        unsafe {
+            core::ptr::copy_nonoverlapping(data_ptr, buf.as_mut_ptr(), to_copy);
+        }
+        to_copy
+    }
+}
+
+// Global ramdisk instance
+pub static RAMDISK: Mutex<Option<Ramdisk>> = Mutex::new(None);
+```
+
+#### 5C.2: Build Script for Embedding Files
+
+```rust
+// build.rs (for embedding files)
+
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+
+fn main() {
+    println!("cargo:rerun-if-changed=userspace/");
+    println!("cargo:rerun-if-changed=files/");
+
+    // Collect all ELF files to embed
+    let files = [
+        ("userspace/hello.elf", "bin/hello"),
+        ("userspace/counter.elf", "bin/counter"),
+        ("userspace/spinner.elf", "bin/spinner"),
+        ("files/test.txt", "test.txt"),
+    ];
+
+    // Create ramdisk binary
+    let output = Path::new("target/ramdisk.bin");
+    let mut out = File::create(&output).unwrap();
+
+    // Calculate offsets
+    let mut offset = 16u32; // Superblock size
+    let name_offset = 16 + (files.len() as u32 * 16); // After superblock + file headers
+
+    // Write file headers
+    let mut file_headers = Vec::new();
+    let mut current_name = name_offset;
+    let mut current_data = current_name;
+
+    for (src_path, dst_name) in &files {
+        let contents = std::fs::read(src_path).unwrap();
+        let name_bytes = dst_name.as_bytes();
+
+        file_headers.push(RamdiskFile {
+            name_offset: current_name,
+            data_offset: current_data,
+            size: contents.len() as u32,
+            _pad: 0,
+        });
+
+        current_name += name_bytes.len() as u32 + 1; // +1 for null
+        current_data += contents.len() as u32;
+    }
+
+    // Write superblock
+    let superblock = RamdiskSuperblock {
+        magic: 0x52555458,
+        num_files: files.len() as u32,
+        files_offset: 16,
+    };
+
+    unsafe {
+        out.write_all(core::slice::from_raw_parts(
+            &superblock as *const _ as *const u8,
+            core::mem::size_of::<RamdiskSuperblock>()
+        )).unwrap();
+    }
+
+    // Write file headers
+    for header in &file_headers {
+        unsafe {
+            out.write_all(core::slice::from_raw_parts(
+                header as *const _ as *const u8,
+                core::mem::size_of::<RamdiskFile>()
+            )).unwrap();
+        }
+    }
+
+    // Write names and data
+    for (src_path, dst_name) in &files {
+        let contents = std::fs::read(src_path).unwrap();
+        out.write_all(dst_name.as_bytes()).unwrap();
+        out.write_all(&[0]).unwrap(); // Null terminator
+        out.write_all(&contents).unwrap();
+    }
+
+    println!("cargo:rustc-env=RAMDISK_PATH={}", output.display());
+}
+```
+
+#### 5C.3: VFS Layer
+
+```rust
+// src/fs/vfs.rs
+
+use crate::fs::ramdisk::Ramdisk;
+
+/// VFS inode
+#[derive(Debug, Clone, Copy)]
+pub enum Inode {
+    RamdiskFile { file_idx: u32 },
+    Pipe { pipe_id: u32 },
+}
+
+/// VFS file operations
+pub trait FileOps {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Errno>;
+    fn seek(&mut self, offset: i64, whence: Whence) -> Result<u64, Errno>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Whence {
+    Set = 0,
+    Cur = 1,
+    End = 2,
+}
+
+/// Ramdisk file operations
+pub struct RamdiskFileOps {
+    pub file: RamdiskFile,
+    pub offset: u64,
+}
+
+impl FileOps for RamdiskFileOps {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Errno> {
+        let ramdisk = RAMDISK.lock().as_ref().ok_or(Errno::ENODEV)?;
+
+        let remaining = (self.file.size as u64 - self.offset) as usize;
+        let to_read = core::cmp::min(buf.len(), remaining);
+
+        if to_read == 0 {
+            return Ok(0);
+        }
+
+        // Read from ramdisk at offset
+        let data_ptr = unsafe {
+            ramdisk.data.as_ptr().add((self.file.data_offset + self.offset) as usize)
+        };
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(data_ptr, buf.as_mut_ptr(), to_read);
+        }
+
+        self.offset += to_read as u64;
+        Ok(to_read)
+    }
+
+    fn write(&mut self, _buf: &[u8]) -> Result<usize, Errno> {
+        Err(Errno::EROFS) // Read-only
+    }
+
+    fn seek(&mut self, offset: i64, whence: Whence) -> Result<u64, Errno> {
+        self.offset = match whence {
+            Whence::Set => offset as u64,
+            Whence::Cur => (self.offset as i64 + offset) as u64,
+            Whence::End => (self.file.size as i64 + offset) as u64,
+        };
+        Ok(self.offset)
+    }
+}
+```
+
+#### 5C.4: File Operation Syscalls
+
+```rust
+// src/syscall/file.rs
+
+use crate::fs::{Ramdisk, Inode, FileOps, RamdiskFileOps, Whence};
+use crate::syscall::fd::{FdKind, FileDescriptor, FileDescriptorTable};
+
+/// Open file
+/// sys_open(path: *const u8, flags: u32) -> i32
+fn sys_open(args: SyscallArgs) -> SyscallRet {
+    let path_ptr = args.arg_ptr(0) as *const u8;
+    let flags = args.arg_u32(1);
+
+    // Read path string
+    let path = unsafe {
+        let mut len = 0;
+        while *(path_ptr.add(len)) != 0 {
+            len += 1;
+        }
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, len))
+    };
+
+    // Find file in ramdisk
+    let ramdisk = RAMDISK.lock();
+    let ramdisk = ramdisk.as_ref().ok_or(Errno::ENODEV)?;
+    let file = ramdisk.find_file(path).ok_or(Errno::ENOENT)?;
+
+    // Allocate file descriptor
+    let process = current_process();
+    let mut fd_table = process.fd_table.lock();
+
+    let kind = FdKind::File {
+        inode: 0, // Will be set by VFS
+        offset: 0,
+    };
+
+    let fd = fd_table.alloc(kind, flags).ok_or(Errno::EMFILE)?;
+    ok_to_ret_i32(fd as i32)
+}
+
+/// Close file descriptor
+/// sys_close(fd: u8) -> i32
+fn sys_close(args: SyscallArgs) -> SyscallRet {
+    let fd = args.arg_u8(0);
+
+    let process = current_process();
+    let mut fd_table = process.fd_table.lock();
+
+    fd_table.close(fd).ok_or(Errno::EBADF)?;
+    ok_to_ret_i32(0)
+}
+
+/// Seek in file
+/// sys_lseek(fd: u8, offset: i64, whence: i32) -> i64
+fn sys_lseek(args: SyscallArgs) -> SyscallRet {
+    let fd = args.arg_u8(0);
+    let offset = args.arg_i64(1);
+    let whence = args.arg_i32(2);
+
+    let process = current_process();
+    let fd_table = process.fd_table.lock();
+
+    let desc = fd_table.get(fd).ok_or(Errno::EBADF)?;
+
+    match desc.kind {
+        FdKind::File { .. } => {
+            // Handle seek via file ops
+            // Implementation details depend on VFS integration
+            ok_to_ret_i64(offset)
+        }
+        _ => error_to_ret_i64(Errno::ESPIPE),
+    }
+}
+```
+
+**Deliverables:**
+- [ ] Ramdisk structure (RamdiskFile, RamdiskSuperblock, Ramdisk)
+- [ ] Build script for embedding files (build.rs)
+- [ ] VFS layer (FileOps trait, RamdiskFileOps)
+- [ ] sys_open implementation
+- [ ] sys_close implementation
+- [ ] sys_lseek implementation
+- [ ] Integration with sys_read/sys_write
+- [ ] Test files and programs
+
+### Phase 5D: Multi-Process Demo (Week 6)
+
+**Goal:** Demonstrate full kernel capabilities
+
+#### 5D.1: Test Programs
+
+**counter.elf** - Simple counter that increments and prints:
+
+```c
+// test-userspace/counter.c
+
+#define SYS_DEBUG_WRITE 0x50
+#define SYS_YIELD 0x03
+
+static inline long syscall3(long num, long arg1, long arg2, long arg3) {
+    long ret;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3)
+        : "memory"
+    );
+    return ret;
+}
+
+static void print_number(int n) {
+    char buf[16];
+    int i = 0;
+
+    if (n == 0) {
+        syscall3(SYS_DEBUG_WRITE, (long)"0", 1, 0);
         return;
     }
-    let mut buf = [0u8; 20];
-    let mut i = 0;
-    while n > 0 {
-        let digit = (n % 10) as u8;
-        buf[i] = b'0' + digit;
+
+    while (n > 0) {
+        buf[i++] = '0' + (n % 10);
         n /= 10;
-        i += 1;
     }
-    while i > 0 {
-        i -= 1;
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+
+    while (i > 0) {
+        syscall3(SYS_DEBUG_WRITE, (long)&buf[--i], 1, 0);
     }
 }
 
-pub fn pmm_alloc_page(flags: u32) -> RxResult<PAddr> {
-    let call_num = ALLOC_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+void _start(void) {
+    int count = 0;
 
-    // Debug: Log which allocator is being called WITH CALL NUMBER
-    unsafe {
-        let msg = b"[PMM] Call #";
-        for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-        }
-        print_decimal(call_num);
-        // ... type-specific message ...
+    while (count < 10) {
+        syscall3(SYS_DEBUG_WRITE, (long)"[Counter] Count: ", 16, 0);
+        print_number(count);
+        syscall3(SYS_DEBUG_WRITE, (long)"\n", 1, 0);
+
+        count++;
+        syscall1(SYS_YIELD, 0);
     }
 
-    // On success:
-    unsafe {
-        let msg = b"[PMM] Call #";
-        for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-        }
-        print_decimal(call_num);
-        let msg = b" SUCCESS -> 0x";
-        // ... hex print of address ...
-    }
+    syscall1(SYS_PROCESS_EXIT, 0);
+}
+```
 
-    // On failure:
-    unsafe {
-        let msg = b"[PMM] Call #";
-        // ... print call number ...
-        let msg = b" FAILED - PMM EXHAUSTED\n";
-        // ... halt with distinctive pattern ...
-        loop {}
+**hello.elf** - Simple greeting program:
+
+```c
+// test-userspace/hello.c
+
+#define SYS_DEBUG_WRITE 0x50
+#define SYS_PROCESS_EXIT 0x06
+
+static inline long syscall1(long num, long arg1) {
+    long ret;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "b"(arg1)
+        : "memory"
+    );
+    return ret;
+}
+
+void _start(void) {
+    const char *msg = "[Hello] Hello from userspace!\n";
+
+    syscall1(SYS_DEBUG_WRITE, (long)msg);
+
+    syscall1(SYS_PROCESS_EXIT, 0);
+}
+```
+
+**spinner.elf** - Visual spinning indicator:
+
+```c
+// test-userspace/spinner.c
+
+#define SYS_DEBUG_WRITE 0x50
+#define SYS_YIELD 0x03
+#define SYS_PROCESS_EXIT 0x06
+
+static inline long syscall1(long num, long arg1) {
+    long ret;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "b"(arg1)
+        : "memory"
+    );
+    return ret;
+}
+
+static void putc(char c) {
+    syscall1(SYS_DEBUG_WRITE, (long)&c);
+}
+
+void _start(void) {
+    const char spinner[] = {'|', '/', '-', '\\'};
+    int i = 0;
+
+    while (1) {
+        putc('\r');
+        putc('[');
+        putc(spinner[i % 4]);
+        putc(']');
+        putc(' ');
+        putc('S');
+        putc('p');
+        putc('i');
+        putc('n');
+        putc('n');
+        putc('i');
+        putc('n');
+        putc('g');
+        putc('.');
+        putc('.');
+
+        i++;
+        syscall1(SYS_YIELD, 0);
+
+        if (i >= 40) {
+            syscall1(SYS_PROCESS_EXIT, 0);
+        }
     }
 }
 ```
 
-### Expected Debug Output (If Environment Worked)
+#### 5D.2: Init Process
 
+```c
+// test-userspace/init.c
+
+#define SYS_SPAWN 0x01
+#define SYS_GETPID 0x04
+#define SYS_YIELD 0x03
+#define SYS_PROCESS_EXIT 0x06
+#define SYS_DEBUG_WRITE 0x50
+
+static inline long syscall1(long num, long arg1) {
+    long ret;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "b"(arg1)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline long syscall2(long num, long arg1, long arg2) {
+    long ret;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(num), "b"(arg1), "c"(arg2)
+        : "memory"
+    );
+    return ret;
+}
+
+struct spawn_args {
+    const char *path;
+    const char **argv;
+};
+
+void _start(void) {
+    int my_pid;
+    int child1, child2, child3;
+    int status;
+
+    my_pid = syscall1(SYS_GETPID, 0);
+
+    // Print init message
+    const char *init_msg = "[Init] Starting PID 1\n";
+    syscall2(SYS_DEBUG_WRITE, (long)init_msg, 20);
+
+    // Spawn counter
+    const char *counter_path = "/bin/counter";
+    child1 = syscall2(SYS_SPAWN, (long)counter_path, 0);
+
+    // Spawn hello
+    const char *hello_path = "/bin/hello";
+    child2 = syscall2(SYS_SPAWN, (long)hello_path, 0);
+
+    // Spawn spinner
+    const char *spinner_path = "/bin/spinner";
+    child3 = syscall2(SYS_SPAWN, (long)spinner_path, 0);
+
+    // Yield to children
+    for (int i = 0; i < 50; i++) {
+        syscall1(SYS_YIELD, 0);
+    }
+
+    // Exit
+    syscall1(SYS_PROCESS_EXIT, 0);
+}
 ```
-[PMM] Call #0 alloc_kernel_page
-[PMM] Call #0 SUCCESS -> 0x280000
-[PMM] Call #1 alloc_kernel_page
-[PMM] Call #1 SUCCESS -> 0x281000
-[PMM] Call #2 alloc_kernel_page
-[PMM] Call #2 SUCCESS -> 0x282000
+
+#### 5D.3: Integration with Kernel
+
+```rust
+// src/main.rs - kernel_main modifications
+
+fn kernel_main() -> Status {
+    // ... existing initialization ...
+
+    // Load init as PID 1
+    let init_path = "/bin/init";
+    let (page_table, entry_addr) = load_elf(init_path).expect("Failed to load init");
+
+    // Create init process
+    let init_process = Process {
+        pid: 1,
+        ppid: 0,
+        state: ProcessState::Ready,
+        page_table,
+        kernel_stack: allocate_kernel_stack()?,
+        user_stack: allocate_user_stack()?,
+        heap_base: VirtAddr::new(0),
+        heap_size: 0,
+        saved_state: SavedState::new(entry_addr, user_stack_top),
+        syscall_ret: 0,
+        fd_table: FileDescriptorTable::new(),
+        cpu_time: 0,
+        sched_time: 0,
+    };
+
+    PROCESS_TABLE.lock().insert(init_process);
+    SCHEDULER.lock().current = Some(1);
+
+    // Jump to userspace
+    uspace::enter_userspace(entry_addr, user_stack_top);
+
+    Status::SUCCESS
+}
+```
+
+**Expected Output:**
+```
+[Init] Starting PID 1
+[Scheduler] Switching to PID 2
+[Counter] Count: 0
+[Scheduler] Switching to PID 3
+[Hello] Hello from userspace!
+[Scheduler] Switching to PID 4
+[-] Spinning..
+[Scheduler] Switching to PID 2
+[Counter] Count: 1
+[Scheduler] Switching to PID 3
+[EXIT] PID 3 exited with code 0
+[Scheduler] Switching to PID 4
+[/] Spinning..
 ...
 ```
 
-Or if exhausted:
-```
-[PMM] Call #5 alloc_kernel_page
-[PMM] Call #5 FAILED - PMM EXHAUSTED
-[PMM] EXHAUSTED - HALTING
-```
-
-### Resolution Path (Requires Working Test Environment)
-
-**Option A: Fix QEMU Console Output**
-- Try alternative OVMF builds (e.g., from EDK2 upstream)
-- Try different QEMU versions (8.0+, 9.0+)
-- Try different machine types (`-machine pc`, `-machine q35`, `-machine virt`)
-- Use QMP (QEMU Monitor Protocol) to inspect firmware state
-
-**Option B: Alternative Test Method**
-- Use real hardware with UEFI
-- Use a different virtualization platform (e.g., VMware, VirtualBox)
-- Use a cloud-based VM with UEFI support
-
-**Option C: Different Development Approach**
-- Add kernel unit tests that don't require full boot
-- Use QEMU in GDB mode to step through code
-- Use QEMU's `-d` flag for CPU/device logging
+**Deliverables:**
+- [ ] counter.elf program with syscalls
+- [ ] hello.elf program
+- [ ] spinner.elf program
+- [ ] init.elf program that spawns children
+- [ ] Build script integration for embedding
+- [ ] Kernel modifications to load init as PID 1
+- [ ] Scheduler demonstration via debug output
+- [ ] Documentation of demo procedure
 
 ---
 
-## ✅ RESOLVED: Working QEMU 7.2 + EDK2 Configuration (2025-01-22)
+## 🎯 Phase 5 Success Criteria
 
-### Root Cause: System QEMU 8.2.2 Incompatible with UEFI Boot
+===
+=== PHASE 6 & 7: Updated with latest progress
+===
 
-**Issue:** System QEMU (`/usr/bin/qemu-system-x86_64` = version 8.2.2) fails to execute EFI applications.
+## 📋 Phase 6: Rustica OS Migration (Userland Bring-Up) ⏳ NEXT
 
-**Solution:** Use custom-built QEMU 7.2.0 with built-in EDK2 firmware.
+**Overview:** Phase 6 migrates the existing Rustica userland onto the stable Rustux kernel foundation, transforming it from a batch-processing system into an interactive operating system.
 
-### Working Configuration
+**Timeline:** 6-8 weeks
+**Prerequisites:** Phase 5 complete (multi-process scheduler, syscalls)
+**Goal:** Boot to an interactive Rustica CLI with preserved UX (including Dracula theme)
 
+**Status:** Phase 6A (Input Subsystem) - Keyboard driver complete ✅
+
+---
+
+### Phase 6 Goals
+
+**Migrate existing Rustica userland to the new Rustux kernel**
+- Preserve existing Rustica code where possible
+- Rebuild against new syscall/libc shim
+
+**Establish a minimal POSIX-like ABI boundary**
+- Clean syscall interface
+- Standard file descriptor conventions (stdin/stdout/stderr)
+
+**Bring up a CLI-capable live environment**
+- Bootable live USB for testing and demos
+- Interactive shell with full keyboard/display support
+
+**Preserve shell UX continuity**
+- Dracula theme retained as default
+- Terminal color handling in userspace
+- No regression in user experience
+
+**Enable live USB boot for testing and demos**
+- FAT32 EFI system partition
+- Direct boot to Rustica CLI
+- No installer required
+
+---
+
+### Migration Strategy
+
+**Rustica remains pure userspace**
+- No Rustica code runs in kernel mode
+- All Rustica components are normal userspace processes
+- Kernel provides only low-level services
+
+**Kernel provides:**
+- ELF loading (via `load_elf_process`)
+- Syscalls (int 0x80 interface)
+- VFS (ramdisk with file operations)
+- Process + memory isolation (CR3 switching, per-process address spaces)
+
+**Rustica apps are rebuilt against a new syscall/libc shim**
+- Not the old kernel assumptions
+- Clean ABI boundary
+- Static linking (no dynamic loader yet)
+
+---
+
+### Rustica Component Mapping
+
+Based on the current Rustica tree structure (`TREE.md`):
+
+| Rustica Component | New Kernel Concept | Notes |
+|-------------------|-------------------|-------|
+| `repo/apps/cli/` | First-class userspace binaries | Rebuilt as ELF for new kernel |
+| `repo/apps/libs/` | Shared userspace libraries | Static linking for now |
+| `repo/apps/gui/` | Future GUI userspace | Not part of Phase 6 |
+| `update-system/` | Privileged userspace service | Daemon process |
+| `update-daemon/` | Long-running system process | Background service |
+| `tools/` | Host-side build tooling | Unchanged (host tools) |
+| `images/live/` | Phase 6 live USB target | Boot media |
+| `releases/cli/*` | Kernel-compatible binary outputs | Final build artifacts |
+
+---
+
+### Minimum Viable Userspace Checklist
+
+**Phase 6A – Minimum Viable CLI Environment**
+
+- [x] `/init` userspace process (PID 1) - Phase 5D ✅
+- [x] Syscalls:
+  - [x] `write` – stdout/stderr output
+  - [x] `read` – stdin input (blocking with keyboard) ✅
+  - [x] `exit` – process termination
+  - [x] `spawn` – execute programs from ramdisk
+  - [ ] `wait` – wait for child processes (future)
+- [x] Keyboard input (PS/2 driver) ✅
+- [ ] STDOUT wired to framebuffer-backed terminal
+- [ ] Single shell binary (`rustica-sh`)
+- [ ] Static linking (no dynamic loader yet)
+
+**This is the path from "kernel runs" → "I can type commands".**
+
+---
+
+### Shell & UX Continuity
+
+**Preserve existing Rustica shell theming**
+- Dracula theme retained as **default** (non-negotiable)
+- Terminal color handling implemented in **userspace**
+- No kernel-side theming logic
+
+**This makes it clear:**
+- Theme = userspace concern
+- Kernel = dumb transport
+
+**Dracula Color Palette (for reference):**
+```rust
+pub const DRACULA_BG: Color = Color { r: 40, g: 42, b: 54 };
+pub const DRACULA_FG: Color = Color { r: 248, g: 248, b: 242 };
+pub const DRACULA_PURPLE: Color = Color { r: 189, g: 147, b: 249 };
+pub const DRACULA_CYAN: Color = Color { r: 139, g: 233, b: 253 };
+pub const DRACULA_GREEN: Color = Color { r: 80, g: 250, b: 123 };
+pub const DRACULA_ORANGE: Color = Color { r: 255, g: 184, b: 108 };
+pub const DRACULA_RED: Color = Color { r: 248, g: 40, b: 62 };
+pub const DRACULA_YELLOW: Color = Color { r: 235, g: 219, b: 178 };
+```
+
+---
+
+### Architecture Note
+
+- **Kernel (`rustux/`)**: Drivers, syscalls, scheduler, memory management
+- **Userspace/OS (`rustica/`)**: Shell, CLI, built-in commands, theming
+
+The shell lives in `rustica/` as a normal userspace program, NOT in the kernel. This keeps the kernel minimal and makes the shell replaceable.
+
+---
+
+### Phase 6A: Input Subsystem (Week 1-2) ✅ COMPLETE
+
+**Goal:** Read keyboard input from hardware and expose to userspace
+
+#### 6A.1: PS/2 Keyboard Driver ✅
+
+**Files created:**
+- `src/drivers/keyboard/mod.rs` - Keyboard driver interface ✅
+- `src/drivers/keyboard/ps2.rs` - PS/2 controller implementation ✅
+- `src/drivers/keyboard/layout.rs` - Scancode to ASCII conversion ✅
+
+**Deliverables:**
+- [x] PS/2 keyboard initialization ✅
+- [x] Scancode processing (press/release, extended keys) ✅
+- [x] Shift/Ctrl/Alt/Caps Lock handling ✅
+- [x] Special key detection (arrows, home, end, etc.) ✅
+- [x] Circular buffer for key events ✅
+
+#### 6A.2: Input Syscall Implementation ✅
+
+**Deliverables:**
+- [x] sys_read() blocks waiting for keyboard input ✅
+- [x] Keyboard IRQ wakes blocked processes ✅
+- [x] Multiple processes can read from stdin ✅
+
+#### 6A.3: Line Editing Support
+
+**Note:** Line editing will be implemented in userspace as part of the shell, not in the kernel. This keeps the kernel minimal and puts editing logic where it belongs.
+
+---
+
+### Phase 6B: Display Subsystem (Week 3-4) ✅ COMPLETE
+
+**Goal:** Write pixels and text to screen (VGA or UEFI framebuffer)
+
+#### 6B.1: Framebuffer Driver ✅
+
+**Files created:**
+- `src/drivers/display/framebuffer.rs` - Framebuffer management ✅
+- `src/drivers/display/font.rs` - PSF2 font support ✅
+
+**Deliverables:**
+- [x] Framebuffer initialized from UEFI GOP ✅
+- [x] Pixel drawing works ✅
+- [x] Rectangle fill works ✅
+- [x] Screen scrolling works ✅
+
+#### 6B.2: Text Console ✅
+
+**Files created:**
+- `src/drivers/display/console.rs` - Text console with font rendering ✅
+
+**Deliverables:**
+- [x] Simple font embedded and working ✅
+- [x] Character rendering with font ✅
+- [x] Text wrapping and scrolling ✅
+- [x] Color support (fg/bg) ✅
+
+#### 6B.3: Display Syscalls ✅
+
+**Deliverables:**
+- [x] Userspace programs can print text ✅
+- [x] Shell output appears on screen ✅
+- [x] No framebuffer access from userspace (kernel only) ✅
+
+---
+
+### Phase 6C: Interactive Shell (Week 5-6) ✅ COMPLETE
+
+**Goal:** Boot directly into an interactive shell running in userspace
+
+**Location:** `/var/www/rustux.com/prod/rustux/test-userspace/` (userspace, NOT kernel)
+
+**Note:** The shell is implemented in C (not Rust) for simplicity in the current kernel environment. A Rust version exists in `/var/www/rustux.com/prod/rustica/shell/` for future migration.
+
+#### 6C.1: Shell Process ✅
+
+**Design:**
+- Shell is a normal userspace process
+- Launched by init (PID 1)
+- Uses stdin/stdout only (no special privileges)
+- Blocks on stdin for input
+- Uses sys_write() for output
+
+**Responsibilities:**
+- [x] Read user input (blocking on stdin)
+- [x] Parse commands
+- [x] Execute programs (via sys_spawn)
+- [x] Handle built-in commands
+
+#### 6C.2: Command Parsing ✅
+
+**Files created:**
+- `test-userspace/shell/shell.c` - Shell implementation
+
+**Implementation:**
+- Space-separated arguments
+- Simple command parsing
+- Built-in command detection
+
+#### 6C.3: Built-in Commands ✅
+
+**Implemented built-in commands:**
+
+| Command | Behavior | Status |
+|---------|----------|--------|
+| `help` | List all commands | ✅ |
+| `clear` | Clear screen | ✅ |
+| `echo` | Print arguments | ✅ |
+| `ps` | List running processes | ✅ |
+| `exit` | Exit shell | ✅ |
+
+#### 6C.4: Program Execution ✅
+
+**Flow:**
+1. Shell parses command
+2. Check if built-in → execute if yes
+3. Otherwise → sys_spawn("/bin/<program>")
+4. Show success/error message
+
+**This validates:**
+- [x] Syscalls work correctly
+- [x] Scheduler handles multiple processes
+- [x] Process lifecycle is complete
+- [x] Userspace is stable
+
+#### 6C.5: Shell Theming (Dracula Theme) ✅
+
+**Implementation:**
+- ANSI color codes for terminal output
+- Purple prompt (rustux>)
+- Cyan command indicator (>)
+- Color-coded messages (green for success, red for errors, cyan for info)
+
+**Deliverables:**
+- [x] Shell boots as PID 1 (via init)
+- [x] Prompt displays in Dracula purple
+- [x] Commands parse and execute correctly
+- [x] Built-in commands work
+- [x] External programs spawn via sys_spawn
+- [x] Output displays in themed colors
+
+---
+
+### Phase 6D: Stability & UX Guarantees (Week 7-8)
+
+**Goal:** Ensure system is stable and usable for extended sessions
+
+#### 6D.1: Error Handling
+
+**Requirements:**
+- No kernel panics from malformed input
+- Shell survives child process crashes
+- Invalid commands show error, don't crash
+- Memory allocation failures handled gracefully
+
+#### 6D.2: Non-Regression Rules
+
+**Critical invariants that MUST be preserved:**
+- Silent Boot Phase remains enforced
+- Kernel never writes framebuffer after userspace starts (debug output only)
+- Keyboard input never blocks kernel threads
+- Scheduler always has a runnable process
+
+#### 6D.3: Exit Criteria
+
+**System is considered complete when:**
+- [ ] System usable for 30+ minutes without crash
+- [ ] No memory leaks during shell usage
+- [ ] Reboot returns to shell cleanly
+- [ ] All Phase 5 functionality still works
+- [ ] Dracula theme displays correctly
+
+---
+
+### Phase 6E: Live Boot Media (Parallel, Not Blocking)
+
+**Goal:** Create a bootable live USB for testing and demos
+
+**Timeline:** Parallel to 6A-6D, can be done incrementally
+
+#### 6E.1: EFI System Partition
+
+**Requirements:**
+- FAT32 formatted partition
+- `EFI/BOOT/BOOTX64.EFI` → Rustux kernel
+- `boot.ini` or similar for kernel arguments
+
+#### 6E.2: Embedded Initramfs
+
+**Approach:**
+- Embed initramfs directly in kernel binary
+- OR load from secondary filesystem
+- Contains:
+  - `/init` binary
+  - `/bin/rustica-sh`
+  - `/bin/*` utilities
+  - `/etc/*` configuration
+
+#### 6E.3: Direct Boot to CLI
+
+**Boot sequence:**
+1. UEFI loads BOOTX64.EFI
+2. Kernel initializes
+3. Init process (PID 1) launches
+4. Init spawns `rustica-sh`
+5. User sees interactive prompt
+
+**No installer required** – this is for testing and demos only
+
+#### 6E.4: Live Media Creation
+
+**Tools to create:**
+- `tools/make-live-usb.sh` – Script to create bootable image
+- `tools/make-iso.sh` – Script to create ISO for QEMU testing
+
+---
+
+### Phase 6 Non-Goals
+
+**These are explicitly OUT OF SCOPE for Phase 6:**
+
+- **No GUI** – Text-mode CLI only
+- **No networking** – Local interaction only (initially)
+- **No package manager** – Static binaries embedded in ramdisk
+- **No multi-user permissions model** – Single-user system
+- **No dynamic linking** – Static binaries only
+- **No hardware drivers beyond keyboard/display** – Keep it minimal
+
+**You'll thank yourself later for keeping the scope tight.**
+
+---
+
+## 🎯 Phase 6 Success Criteria
+
+Phase 6A-6C is complete when:
+
+- [x] Keyboard input works (PS/2 driver)
+- [x] Screen displays text (framebuffer + console)
+- [x] Shell boots and displays Dracula-themed prompt
+- [x] Built-in commands work (help, echo, ps, clear, exit)
+- [x] External programs spawn and run
+- [x] Line editing works (backspace)
+- [x] Multiple processes can run concurrently
+- [ ] System is stable for extended use (Phase 6D)
+
+---
+
+## 🔧 Development Quick Reference
+
+### Build Kernel
+```bash
+cd /var/www/rustux.com/prod/rustux/
+cargo build --release --target x86_64-unknown-uefi --features uefi_kernel
+```
+
+### Build Shell (userspace)
+```bash
+cd /var/www/rustux.com/prod/rustica/shell
+cargo build --release --target x86_64-unknown-none
+```
+
+### Run Kernel
 ```bash
 /usr/local/bin/qemu-system-x86_64 \
-    -machine q35 \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/local/share/qemu/edk2-x86_64-code.fd \
-    -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-    -drive file=rustux.img,format=raw \
-    -debugcon file:/tmp/rustux-debug.log \
-    -serial mon:stdio \
-    -display none \
-    -no-reboot \
-    -m 512M
-```
-
-### Key Components
-
-| Component | Path | Version | Notes |
-|-----------|------|---------|-------|
-| **QEMU Binary** | `/usr/local/bin/qemu-system-x86_64` | 7.2.0 | Built from source |
-| **EDK2 Firmware** | `/usr/local/share/qemu/edk2-x86_64-code.fd` | Built-in | QEMU 7.2's EDK2 |
-| **VARS File** | `/usr/share/OVMF/OVMF_VARS_4M.fd` | System | OVMF variables store |
-| **Machine Type** | `-machine q35` | - | Q35 chipset |
-
-### DO NOT USE
-
-- ❌ System QEMU: `/usr/bin/qemu-system-x86_64` (version 8.2.2)
-- ❌ System OVMF: `/usr/share/ovmf/OVMF.fd` (incompatible with any QEMU for block boot)
-- ❌ `-bios` flag (use pflash instead)
-
-### Verification Test Results
-
-**NEW kernel (rustux) with WORKING config:**
-```
-✅ 15,136 bytes of debug output
-✅ PMM call numbering working: [PMM] Call #0-63
-✅ 28,128 free pages reported
-✅ Stack switch successful
-✅ Heap initialized
-✅ Userspace ELF loading started
-```
-
-**OLD kernel (kernel/) with WORKING config:**
-```
-✅ UEFI shell loads
-✅ Boot menu appears
-✅ EDK2 firmware functional
-```
-
-**BOTH kernels with BROKEN config (system QEMU 8.2.2):**
-```
-❌ 0 bytes output
-❌ No UEFI boot messages
-❌ No debug console output
-```
-
-### Old Kernel vs New Kernel
-
-**Old Kernel** (`/var/www/rustux.com/prod/kernel/`):
-- Pre-refactored kernel (before Rustux reorganization)
-- Has separate UEFI loader: `uefi-loader/`
-- Has kernel-efi application: `kernel-efi/`
-- Uses same uefi 0.36 crate
-- Two-stage boot: loader → kernel
-
-**New Kernel** (`/var/www/rustux.com/prod/rustux/`):
-- Refactored kernel with library + binary structure
-- Single UEFI binary: `rustux.efi`
-- Uses same uefi 0.36 crate
-- Single-stage boot: direct UEFI application
-
-**Both kernels use the SAME UEFI crate and BOTH work with QEMU 7.2 + EDK2.**
-
-The issue was NEVER the kernel code - it was the QEMU configuration.
-
-### PMM Call Numbering - NOW WORKING
-
-The PMM call numbering debug output is now visible:
-
-```
-[PMM] Call #0 alloc_kernel_page
-[PMM] Call #0 SUCCESS -> 0x240000
-[PMM] Call #1 alloc_kernel_page
-[PMM] Call #1 SUCCESS -> 0x241000
-...
-[PMM] Call #63 alloc_kernel_page
-[PMM] Call #63 SUCCESS -> 0x27f000
-```
-
-This shows:
-- 64 page tables allocated for kernel stack (256KB / 4KB)
-- All allocations succeeding
-- Physical addresses sequential from 0x240000 to 0x27f000
-- PMM exhaustion detection NOT triggered
-
-### Next Steps
-
-With the working QEMU configuration:
-
-1. **Debug the page table hang** - PMM call numbering now visible
-2. **Test userspace execution** - Can now see full boot process
-3. **Validate stack reservation fix** - Can verify no stack overlap
-4. **Test old kernel** - Can compare behavior between kernels
-
----
-
-## 💾 Current Boot Model (Intentional & Sufficient)
-
-### Direct UEFI Boot Architecture
-
-**The kernel is a direct UEFI application. This is INTENTIONAL.**
-
-- Kernel is a UEFI application (`rustux.efi`)
-- Loads directly via `/EFI/BOOT/BOOTX64.EFI` (removable media fallback)
-- Exits boot services itself
-- Clean, simple, no intermediate layers
-- This is the simplest and most debuggable path during early kernel development
-
-### A Multistage Loader Is NOT Required For:
-
-- ✅ Paging setup (kernel does this)
-- ✅ ELF loading (UEFI firmware handles PE/COFF)
-- ✅ Userspace execution (kernel does this)
-- ✅ CLI bring-up (kernel does this)
-- ✅ Process management (kernel does this)
-
-**A multistage loader would only add complexity without enabling any new capabilities.**
-
-### This Architecture Is FINAL
-
-Direct UEFI boot is the CORRECT and FINAL architecture for Rustux.
-
-**Do NOT:**
-- Revert to a loader→kernel two-stage architecture
-- Add Multiboot headers to the UEFI kernel
-- Complicate the boot path "for future flexibility"
-
-**The direct UEFI kernel is the reference implementation.**
-
----
-
-## 🎯 Boot Manager & Multiboot Strategy (For Future Live USB)
-```
-/EFI/BOOT/
-  ├── BOOTX64.EFI        ← bootmgr (tiny menu)
-  ├── RUSTUX.EFI         ← current kernel (direct UEFI)
-  ├── RUSTUX-DBG.EFI     ← debug build
-  └── RUSTUX-OLD.EFI     ← previous version (rollback)
-```
-
-**Boot flow:**
-1. Firmware loads `BOOTX64.EFI` (boot manager)
-2. Boot manager shows menu
-3. User selects kernel
-4. Boot manager calls `LoadImage + StartImage` on selected kernel
-5. Kernel boots directly as UEFI application
-6. Kernel exits boot services itself
-
-**Key insight:** The kernel never knows or cares that a boot manager existed. It's still a direct-boot UEFI application.
-
-### /boot.cfg Format
-
-```ini
-# Rustux Boot Configuration
-[Entry]
-name=Rustux (Current)
-path=\\EFI\\BOOT\\RUSTUX.EFI
-options=debug
-
-[Entry]
-name=Rustux (Debug)
-path=\\EFI\\BOOT\\RUSTUX-DBG.EFI
-options=debug,trace,klog
-
-[Entry]
-name=Rustux (Previous)
-path=\\EFI\\BOOT\\RUSTUX-OLD.EFI
-options=
-```
-
-### Multiboot vs UEFI Reality
-
-**Multiboot v1/v2 (GRUB):**
-- Designed for legacy BIOS
-- Uses ELF loading ABI
-- GRUB parses ELF and sets up memory map
-- Kernel is NOT an EFI application
-
-**UEFI world:**
-- Kernels ARE EFI applications
-- Firmware uses PE/COFF format
-- `LoadImage + StartImage` is the loading mechanism
-- No Multiboot headers needed
-
-**If you want Multiboot support later:**
-- Write a separate compatibility stub
-- Don't contaminate your kernel ABI
-- Most modern kernels don't support Multiboot anymore
-
-### Final Recommendation
-
-**✅ DO:**
-- Plan for multiboot via boot manager
-- Plan for live USB testing
-- Keep kernel as direct UEFI application
-- Use tiny boot manager for chainloading
-
-**❌ DON'T:**
-- Revert to loader→kernel architecture
-- Add Multiboot headers to UEFI kernel
-- Complicate kernel boot path
-
-**You already chose the correct core architecture.**
-
-### Old Loader Code Analysis
-
-**Location:** `/var/www/rustux.com/prod/kernel/uefi-loader/`
-
-#### ✅ Reusable Components
-
-**1. LoadImage/StartImage Pattern** (`main.rs:773-862`)
-
-```rust
-// Load the kernel using UEFI LoadImage service
-let mut kernel_handle: *mut core::ffi::c_void = core::ptr::null_mut();
-let load_image = (*boot_services).load_image;
-
-// Load from buffer (BootPolicy = FALSE)
-let status = load_image(
-    false.into(),  // BootPolicy: FALSE
-    uefi::boot::image_handle().as_ptr(),
-    core::ptr::null(),  // No FilePath when loading from buffer
-    kernel_data.as_ptr() as *mut u8,
-    file_size,
-    &mut kernel_handle,
-);
-
-// Start the loaded image
-let start_image = (*boot_services).start_image;
-let mut exit_data_size: usize = 0;
-let mut exit_data: *mut u16 = core::ptr::null_mut();
-
-let start_status = start_image(
-    kernel_handle,
-    &mut exit_data_size as *mut _,
-    &mut exit_data as *mut _
-);
-```
-
-This is the correct pattern for chainloading UEFI applications.
-
-**2. Simple File Opening** (`main.rs:698-713`)
-
-```rust
-let image_handle = uefi::boot::image_handle();
-let loaded_image = uefi::boot::open_protocol_exclusive::<LoadedImage>(image_handle)?;
-let device = loaded_image.device().ok_or(uefi::Status::DEVICE_ERROR)?;
-let mut fs = uefi::boot::open_protocol_exclusive::<SimpleFileSystem>(device)?;
-let mut root = fs.open_volume()?;
-```
-
-**3. UEFI Console Output** (`main.rs:110-188`)
-
-```rust
-uefi::system::with_stdout(|stdout| {
-    stdout.clear().unwrap();
-    stdout.enable_cursor(true).unwrap();
-    stdout.output_string(cstr16!("Boot message\r\n"));
-});
-```
-
-**4. Error Display with Reboot** (`main.rs:671-694`)
-
-```rust
-fn show_error_menu(_error_message: &str) -> ! {
-    uefi::system::with_stdout(|stdout| {
-        let _ = stdout.output_string(cstr16!("Boot failed. Rebooting...\r\n"));
-    });
-    // Wait 5 seconds then reboot
-    for _ in 0..50 {
-        let stall = (*boot_services).stall;
-        stall(100000);  // 100ms * 50 = 5 seconds
-    }
-    reboot_system();
-}
-```
-
-#### ❌ NOT Reusable (Don't Copy)
-
-**1. Two-Stage Architecture**
-- Old loader loads kernel as data buffer
-- Validates PE/COFF headers
-- Manually parses entry points
-- Creates complex handoff structures
-
-**Why avoid:** Your kernel boots directly via UEFI. Don't add unnecessary layers.
-
-**2. Memory Map Translation** (`main.rs:201-330`)
-- Converts UEFI memory map to custom format
-- Creates `KernelHandoff` structure
-- Complex memory range processing
-
-**Why avoid:** Kernel should get its own memory map via UEFI protocols.
-
-**3. Kernel Data Buffer Loading** (`main.rs:738-756`)
-- Reads entire kernel file into memory
-- Validates as PE/COFF
-- Passes buffer to LoadImage
-
-**Why avoid:** For boot manager, just pass file path to LoadImage. Let firmware handle PE loading.
-
-#### 🟡 Partially Reusable (Adapt, Don't Copy)
-
-**1. Config File Format**
-- Old loader doesn't have one (hardcoded path)
-- Design a simple INI-style format for boot entries
-- Use basic line-by-line parsing
-
-**2. Menu System**
-- Old loader has no menu (auto-boots single kernel)
-- Design simple text-based menu:
-  ```
-    1. Rustux (Current)
-    2. Rustux (Debug)
-    3. Rustux (Previous)
-    Select [1-3]:
-  ```
-
-**3. Keyboard Input**
-- UEFI Simple Text Input Protocol for boot-time selection
-- NOT PS/2 keyboard (that's for runtime)
-- Keep it minimal: number keys + Enter
-
-### Recommended Boot Manager Structure
-
-```
-bootmgr/
-├── Cargo.toml
-└── src/
-    ├── main.rs           # UEFI entry point
-    ├── config.rs         # /boot.cfg parsing (50 lines)
-    ├── menu.rs           # Simple text menu (100 lines)
-    └── chainload.rs      # LoadImage wrapper (50 lines)
-```
-
-**Total: ~300 lines** (vs old loader's ~900 lines)
-
-### Key Principle
-
-**The boot manager is a temporary convenience.**
-- It selects which kernel to boot
-- It does NOT parse ELF or PE
-- It does NOT set up page tables
-- It does NOT create kernel handoff structures
-
-**Your kernel remains a direct-boot UEFI application.**
-
----
-
-## 🔮 Future Boot Options (DEFERRED - Not Current Work)
-
-**These are future goals for convenience and deployment. They are NOT current work items and should NOT block:**
-
-### 1. Multiboot2 Support
-
-**Goal:** Boot via GRUB or other Multiboot-compliant bootloaders.
-
-**Requirements:**
-- Multiboot2 header in kernel binary
-- ELF format (not PE/COFF)
-- Compatibility stub for GRUB protocol
-
-**Status:** DEFERRED
-- Direct UEFI boot is sufficient for all current development
-- Most modern OSes don't support Multiboot (Linux uses EFI stub, Windows doesn't support it)
-- Can be added later via separate compatibility stub if needed
-
-### 2. EFI → Loader → Kernel Split
-
-**Goal:** Two-stage boot with intermediate loader.
-
-**Requirements:**
-- Loader application that chainloads kernel
-- Configuration file parsing
-- Boot menu for kernel selection
-
-**Status:** DEFERRED
-- Current: Direct UEFI boot is simpler and more debuggable
-- Future: Tiny bootmgr.efi for live USB convenience (see Boot Manager section above)
-- NOT a two-stage architecture with complex handoff structures
-
-### 3. Unified Boot Path (BIOS + UEFI)
-
-**Goal:** Single kernel binary that boots on both legacy BIOS and UEFI.
-
-**Requirements:**
-- Legacy BIOS bootloader (protect mode entry)
-- UEFI application entry point
-- Runtime detection of boot method
-
-**Status:** DEFERRED
-- Modern systems are UEFI-only
-- Legacy BIOS support adds significant complexity
-- Can be added later if there's demand for legacy hardware support
-
-### 4. Live USB / Installation Media
-
-**Goal:** Bootable USB stick with graphical installer.
-
-**Requirements:**
-- Boot manager to select kernel options
-- Partition management
-- File system creation
-- Package installation
-
-**Status:** DEFERRED
-- Current focus: Getting userspace execution working
-- Installer is a deployment concern, not kernel development
-- Can be built after kernel and userspace are stable
-
-### ⚠️ Critical: None of the Above Should Block Current Work
-
-**These future options MUST NOT block:**
-- ✅ Userspace execution
-- ✅ CLI functionality
-- ✅ Process management
-- ✅ Filesystem drivers
-- ✅ Live debugging and testing
-
-**The direct UEFI kernel remains the reference implementation.**
-
----
-
-## 🔴 Previous Diagnosis: GRUB EFI Test (SUPERSEDED)
-
-**Previous conclusion:** QEMU 7.2.0 + OVMF environment does not execute EFI applications.
-
-**Actual issue:** Was using system QEMU 8.2.2 instead of custom-built QEMU 7.2.0.
-
-Both GRUB EFI AND Rustux kernel work with the correct QEMU 7.2 + EDK2 configuration.
-
----
-
-## ✅ DEFINITIVE PROOF: This is an Environmental Issue
-
-### The Smoking Gun Test (2025-01-21 21:26 CST)
-
-**Hypothesis:** If the page-table fix broke the kernel, reverting to old code should fix it.
-
-**Test Results:**
-```
-OLD CODE (commit 610e7ee - before page-table fix):
-  wc -c /tmp/rustux-debug.log: 0 bytes
-  head -50 /tmp/rustux-debug.log: (empty)
-
-NEW CODE (commit 55efe75 - with page-table fix):
-  wc -c /tmp/rustux-debug.log: 0 bytes
-  head -50 /tmp/rustux-debug.log: (empty)
-```
-
-**Conclusion:** **BOTH old and new code produce ZERO output.**
-
-This definitively proves:
-- ✅ The page-table fix is NOT the problem
-- ✅ The code was working in an earlier session (954 lines of output)
-- ❌ Something changed in the environment between sessions
-- ❌ QEMU 7.2.0 + OVMF in this environment is not executing EFI applications
-
----
-
-## 🎯 Page Table Isolation Fix - COMPLETE AND COMMITTED
-
-**Commit:** 55efe75 "Fix user page table isolation - PT-level crash resolution"
-
-**Status:** 📌 **FINALIZED AND FROZEN** - This logic is correct and must not be refactored.
-
-### The Core Fix
-
-Added `table_from_entry()` helper function that must be called AFTER any
-parent entry updates. The critical insight: never cache and reuse page-table
-entry values after modifying parent entries.
-
-```rust
-// BEFORE (WRONG):
-let pd_paddr = if (*pdp.add(pdp_idx) & 1) == 0 {
-    let new_pd = self.alloc_page_table()?;
-    *pdp.add(pdp_idx) = (new_pd | 7);
-    new_pd  // ← Returns cached value
-} else { ... };
-let pd = paddr_to_vaddr(pd_paddr)...;  // ← Uses potentially stale value
-
-// AFTER (CORRECT):
-if (*pdp.add(pdp_idx) & 1) == 0 {
-    let new_pd = self.alloc_page_table()?;
-    *pdp.add(pdp_idx) = (new_pd | 7);
-} else { ... }
-// CRITICAL: Re-read parent entry after potential update
-let pd = table_from_entry(*pdp.add(pdp_idx));
-```
-
-**Applied at all levels:** PML4 → PDP, PDP → PD, PD → PT
-
-### Problems This Fix Resolved
-
-1. **Kernel PDP/PD reuse without USER bit** - Fixed by detecting kernel-owned entries and creating separate userspace copies
-2. **[MAP] → PT allocation crash** - Fixed by using `table_from_entry()` instead of cached addresses
-3. **USER bit propagation to all page-table levels** - Fixed by setting USER bit at every level
-
-### 📌 DO NOT TOUCH - Frozen Implementation
-
-**This fix is FINALIZED and CORRECT.**
-
-Any future crashes before userspace execution should NOT be debugged by modifying this code.
-
-The canonical pattern is:
-```rust
-// 1. Modify parent entry
-*parent.add(idx) = new_value | flags;
-
-// 2. ALWAYS re-read to get virtual address
-let table = unsafe { table_from_entry(*parent.add(idx)) };
-
-// 3. Use the table
-*table.add(child_idx) = child_entry;
-```
-
-**Do NOT:**
-- Cache physical addresses and reuse them later
-- Skip re-reading parent entries for "performance"
-- Refactor this logic unless userspace paging is redesigned
-
-**Pushed to:** github.com:gitrustux/rustux.git
-
-**Location:** `src/process/address_space.rs` - `map_page()` function
-
----
-
-## 🚨 Known Issue: UEFI Boot in QEMU 7.2.0 Environments
-
-### Problem Description
-**QEMU 7.2.0 + OVMF in certain configurations fails to execute EFI applications.**
-
-### What Works
-The kernel successfully boots and runs userspace on:
-- QEMU 8.x + OVMF (tested in earlier sessions)
-- Bare metal UEFI systems
-- Standard virtualized environments
-
-### What May Fail
-- QEMU 7.2.0 in certain configurations
-- Restricted/containerized hosts
-- Environments with non-standard OVMF builds
-
-### Possible Causes for Environmental Change
-Between the earlier working session (954 lines of output) and now (0 bytes):
-
-1. **OVMF firmware file changed/corrupted** - `/usr/share/ovmf/OVMF.fd` may have been updated
-2. **QEMU 7.2.0 installation issue** - Package updates may have broken something
-3. **Permissions/SELinux/AppArmor** - Security policies may have changed
-4. **KVM module state** - Kernel modules may need reloading
-5. **Container/host restrictions** - Execution paths blocked in virtualized environments
-
-### Diagnostic Commands
-
-```bash
-# Find all available OVMF files
-find /usr/share -name "*OVMF*.fd" 2>/dev/null
-
-# Check OVMF file integrity
-od -A x -t x1z -N 64 /usr/share/ovmf/OVMF.fd
-
-# Try different OVMF variants
-for ovmf in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd; do
-    if [ -f "$ovmf" ]; then
-        echo "Testing with $ovmf"
-        timeout 10s qemu-system-x86_64 \
-            -bios "$ovmf" \
-            -drive file=rustux.img,format=raw \
-            -debugcon file:/tmp/test.log \
-            -nographic -m 512M 2>&1 | head -5
-        wc -c /tmp/test.log
-    fi
-done
-```
-
----
-
-## 📋 Test Results Timeline
-
-| Time | Commit | Output | Status |
-|------|--------|--------|--------|
-| Earlier session | 610e7ee | 954 lines | ✅ Working |
-| 21:26 CST | 610e7ee (old code) | 0 bytes | ❌ Failed |
-| 21:37 CST | 55efe75 (page-table fix) | 0 bytes | ❌ Failed |
-
-**Conclusion:** Environmental failure, not code regression.
-- This bypasses: heap, allocator, page tables, CR3, logging, Rust runtime
-- If '!' doesn't appear on port 0xE9, control never reaches the kernel
-- EFI binary verified: PE32+ executable (EFI application) x86-64
-- Disk image verified: BOOTX64.EFI at /EFI/BOOT/BOOTX64.EFI (case-sensitive)
-- QEMU runs but produces NO debug output
-
-### Diagnosis
-**QEMU 7.2.0 + OVMF incompatibility in this environment.**
-
-Possible causes:
-1. OVMF build is present but silently fails to load external EFI apps
-2. QEMU 7.2.0 + this OVMF build has a regression/incompatibility
-3. Environment forbids UEFI firmware execution paths (common in CI/containers)
-
-### Why SeaBIOS "working" doesn't help
-SeaBIOS ≠ OVMF. Legacy BIOS ≠ UEFI. These are entirely different boot paths.
-A working SeaBIOS debug console only proves QEMU's isa-debugcon works,
-not that OVMF is functioning correctly.
-
-### Resolution Path
-**REQUIRES: Different execution environment**
-- Different host machine
-- Newer QEMU (≥ 8.x)
-- Older known-good QEMU/OVMF pair
-- Bare metal or properly virtualized environment
-
----
-
-## 🎯 What Happens When UEFI Execution Works
-
-Once the environmental blocker is resolved:
-
-1. The '!' character will appear immediately on kernel entry
-2. Page table isolation will prevent the PT-level crash
-3. Sanity check will read 0xF3 (correct userspace byte)
-4. IRETQ will land in userspace
-5. "Hello from userspace!" will print
-
-The code is READY. This is purely an environmental issue.
-
-x86-64 requires the USER bit to be set at **every page-table level** (PML4 → PDP → PD → PT).
-
-Current issue:
-- PML4[0], PDP[0], PD[0] are copied from kernel paging structures
-- Kernel paging structures are **supervisor-only**
-- PT entry has USER bit set, but upper levels do not
-- Result: User-mode reads return 0x00 or fault
-
-**Why the Naïve Fix Is Wrong**
-Simply OR-ing USER into reused kernel PDP/PD entries would make kernel memory user-accessible (privilege escalation bug).
-
-### Correct Architectural Fix
-
-**Rule:** Kernel and userspace must NOT share PDP/PD/PT structures (only PML4)
-
-| Level | Shared? |
-|-------|---------|
-| PML4  | ✅ Yes  |
-| PDP   | ❌ No   |
-| PD    | ❌ No   |
-| PT    | ❌ No   |
-
-**Required Behavior:**
-When mapping a userspace virtual address:
-- If PML4 entry points to kernel PDP → allocate a new PDP
-- Same for PD and PT
-- All userspace tables must be: Present + Writable + USER
-
----
-
----
-
-## ✅ UEFI/QEMU Environment - RESOLVED (2025-01-20)
-
-**Issue:** System's OVMF firmware files were corrupted (all zeros), QEMU 8.2.2 had compatibility issues
-
-**Resolution:**
-- Purged and reinstalled `ovf` package
-- Fixed OVMF firmware corruption - files now have valid _FVH signatures
-- Found working QEMU configuration: `-machine pc,accel=tcg` (not q35)
-- Added `-machine acpi=off,hpet=off` to avoid QEMU mutex crashes
-
-**Verified Working Configuration:**
-```bash
-qemu-system-x86_64 \
-  -bios /usr/share/ovmf/OVMF.fd \
-  -drive file=image.img,format=raw \
-  -nographic \
-  -m 512M \
-  -machine type=pc,accel=tcg \
-  -machine acpi=off,hpet=off
-```
-
-**⚠️ IMPORTANT: UEFI Boot Requires PFLASH, Not -bios**
-
-For proper UEFI boot, use pflash (not -bios):
-```bash
-qemu-system-x86_64 \
-  -machine pc,accel=tcg \
-  -m 512M \
-  -nographic \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-  -drive format=raw,file=fat:rw:/tmp/rustux-efi \
-  -device isa-debugcon,iobase=0xE9,chardev=debug \
-  -chardev file,id=debug,path=/tmp/qemu-debug.log
-```
-
-**Rules:**
-- ❌ No `-bios` (conflicts with pflash)
-- ❌ No duplicate `-drive` specifications
-- ✅ Two pflash drives (CODE and VARS)
-- ✅ One ESP FAT image
-
-**Architecture-Specific Firmware Requirements:**
-| Architecture | Firmware | Notes |
-|--------------|----------|-------|
-| **amd64** | `/usr/share/OVMF/OVMF_CODE_4M.fd` | EDK2 UEFI firmware (pflash) |
-| **arm64** | EDK2 AArch64 firmware | Different package: `edk2-arm64` or QEMU's `-bios` parameter |
-| **riscv64** | OpenSBI | Uses OpenSBI as firmware, not UEFI |
-
-
-**Key Learnings:**
-- UEFI loader is correct ✅
-- Boot path is real, not emulator artifact ✅
-- Previous crashes were environmental, not kernel logic ✅
-- Nothing UEFI-related needs to be revisited for amd64 ✅
-
----
-
-## ✅ QEMU 7.2 Built from Source - RESOLVED (2025-01-21)
-
-**Issue:** QEMU 8.2.2 has mutex bug when loading EFI binaries from block storage. System QEMU packages were incompatible.
-
-**Resolution:**
-- Built QEMU 7.2.0 from source (`/tmp/qemu-7.2.0/`)
-- Installed to `/usr/local/bin/qemu-system-x86_64` and `/usr/local/share/qemu/`
-- All ROM files installed properly (efi-e1000.rom, vgabios-stdvga.bin, etc.)
-
-**Critical Discovery - System OVMF Incompatible:**
-- `/usr/share/OVMF/OVMF_CODE_4M.fd` **DOES NOT WORK** with QEMU 7.2
-- Must use QEMU 7.2's built-in EDK2 firmware: `/usr/local/share/qemu/edk2-x86_64-code.fd`
-
-**Verified Working QEMU 7.2 Configuration:**
-```bash
-/usr/local/bin/qemu-system-x86_64 \
-  -machine q35 \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/local/share/qemu/edk2-x86_64-code.fd \
-  -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-  -drive file=/tmp/rustux.img,format=raw \
-  -debugcon file:/tmp/rustux-debug.log \
-  -serial mon:stdio \
-  -display none \
-  -no-reboot \
+  -bios /usr/share/qemu/OVMF.fd \
+  -drive format=raw,file=disk.img \
   -m 512M
 ```
 
-**DO NOT USE:**
-- ❌ System QEMU (`/usr/bin/qemu-system-x86_64` = 8.2.2)
-- ❌ System OVMF (`/usr/share/OVMF/OVMF_CODE_4M.fd`) with QEMU 7.2
-- ❌ System OVMF with any QEMU version for block device boot
-
-**Rules:**
-- ✅ Use QEMU 7.2 built-in EDK2 firmware
-- ✅ System OVMF VARS file is compatible
-- ✅ Block devices work with QEMU 7.2 EDK2
-
-**Test Results:**
-- UEFI shell loads successfully ✅
-- FS0: filesystem maps correctly ✅
-- Kernel boots and outputs to debug console ✅
-
 ---
 
-## 🔄 Two-Phase PMM Strategy
-
-### Architectural Context
-
-**Problem:** Original bitmap PMM had bugs preventing multi-page allocation.
-
-**Proper kernel architecture progression:**
-1. **Boot PMM** - Simple, dumb, reliable (first thing after UEFI)
-2. **Early Kernel PMM** - Vec-based, linear scan (✅ COMPLETE - where we are now)
-3. **Final PMM** - Bitmap / buddy allocator (optimization, not foundation)
-
----
-
-## ✅ Phase A: Vec-Based PMM - COMPLETE (2025-01-19)
-
-**Status:** Vec-based PMM implementation complete and working
-
-**Completed (2025-01-19 session):**
-- ✅ Backed up bitmap PMM to `src/mm/pmm_bitmap.rs.bak`
-- ✅ Replaced `src/mm/pmm.rs` with Vec-based implementation (~650 lines)
-- ✅ Page array with state enum: `Free | Allocated | Reserved`
-- ✅ Linear scan allocation (O(N) where N = total pages)
-- ✅ Added `pmm_reserve_pages()` for heap reservation
-- ✅ Increased boot allocator buffer to 2MB
-- ✅ Fixed userspace test execution order (after PMM init)
-- ✅ PMM reports **32,256 free pages** (126MB of memory)
-
-**Test Output (UEFI mode):**
-```
-[INIT] PMM init complete, free pages: 7E00 (32,256 decimal)
-[KERNEL] Heap test passed
-```
-
-**Remaining Issues:**
-- ⚠️ Heap allocator hangs on `Vec::push()` and `Vec::with_capacity()`
-- ⚠️ This is a separate subsystem issue from PMM
-
-**Original bitmap PMM saved to:** `src/mm/pmm_bitmap.rs.bak` (for Phase B)
-
----
-
-## 🔵 Phase B: Reintroduce Bitmap PMM (LATER)
-
-**Trigger:** Userspace works and is stable
-
-**Action Items:**
-1. Reintroduce bitmap PMM as `pmm_v2`
-2. Validate against known-good Vec PMM
-3. Add unit tests for allocation patterns
-4. Add randomized allocation/free stress tests
-5. Feature flag: `#[cfg(feature = "pmm_bitmap")]`
-
-**Purpose:** Optimization, not foundation
-
-**Why This Avoids Regressions:**
-- Vec PMM becomes the "known-good" baseline
-- Bitmap PMM validated against it
-- Can switch between implementations for testing
-- No risk of breaking working userspace
-
-**DO NOT return to bitmap debugging until Vec PMM works.**
-
----
-
-## 🟡 Heap Allocator - Fixes Implemented, Validation Pending (2025-01-20)
-
-**Status:** Critical bugs fixed, validation tests needed
-
-**Issues Fixed:**
-1. **Block Splitting Bug** ✅ FIXED:
-   - Original block's size was not being updated after split
-   - Fix: `(*current).size = offset + size` (only when split confirmed)
-   - This prevents allocator from re-finding the same block
-
-2. **Broken LAST_ALLOCATED Check** ✅ REMOVED:
-   - Check was too aggressive, preventing valid allocations
-   - `alloc_size` used block size (16MB) instead of allocation size
-   - Caused false "overlap" detection
-
-3. **Kernel Stack Switch** ✅ COMPLETE:
-   - 256KB (64 pages) from PMM kernel zone
-   - Non-returning jump to continuation
-   - Prevents stack overflow on UEFI's 4-8KB firmware stack
-
-**Remaining Work:**
-- **Validation**: Run ELF loader multiple times to confirm no vaddr corruption
-- **Free-Block Coalescing** (optional but recommended): Deallocation may not properly merge adjacent free blocks
-- **Allocator Invariants** (recommended):
-  ```rust
-  assert!(block.size >= HEADER_SIZE);
-  assert!(!overlapping_blocks());
-  ```
-
-### Validation Steps
-
-1. Allocate/free in a loop (stress test)
-2. Run ELF loader multiple times without reboot
-3. Confirm vaddr values are correct (not 0x300028 corruption)
-
-**Current Commit:** `4668ecc` - "Fix heap allocator block splitting and remove broken LAST_ALLOCATED check"
-
----
-
-## 🔴 PMM Single-Page Bug (RESOLVED - Superseded by Vec PMM)
-
-**Status:** Superseded by two-phase strategy
-
-**Original Issue:** Bitmap allocator only allocates 1 page before failing.
-
-**Resolution:** Replaced with Vec-based allocator (Phase A complete).
-
-**Root Cause:** Jumped to complex allocator without proving simpler approach works.
-
----
-
-## ✅ COMPLETED: Heap & VMO Corruption Fixes (2025-01-19)
-
-**Summary:** Fixed two major corruption issues that were blocking userspace execution.
-
-### Issue #1: VMO Corruption via Vec Moves ✅ FIXED
-**Root Cause:** `Vmo` stored by value in `Vec<LoadedSegment>` caused VMO objects to move when Vec reallocated, corrupting interior pointers.
-
-**Fix:** Changed `pub vmo: Vmo` to `pub vmo: Box<Vmo>` for stable heap addresses.
-
-**Files Modified:** `src/exec/elf.rs`
-
-### Issue #2: ProgramHeader Corruption via Heap Allocations ✅ FIXED
-**Root Cause:** During ELF segment loading, VMO operations triggered heap allocations that corrupted the `load_segments` Vec, causing invalid values during segment creation.
-
-**Fix:** Convert Vec to array before any VMO operations, and copy all ProgramHeader fields to local variables before heap allocations.
-
-**Files Modified:** `src/exec/elf.rs`
-- Changed `ProgramHeader` to derive `Copy`
-- Added array conversion before segment loading loop
-- Copy all fields (`p_offset`, `p_filesz`, `p_memsz`, `p_vaddr`, `p_flags`) before VMO operations
-
-**Test Results (After Fixes):**
-```
-[ELF] Loading segment 0: offset=0x0 filesz=0x130 memsz=0x130 ✅
-[ELF] Loading segment 1: offset=0x1000 filesz=0x62 memsz=0x62 ✅
-[ELF] Loading segment 2: offset=0x1100 filesz=0x1c memsz=0x1c ✅
-[VMO-WRITE] VMO#0 pages=1 paddr=0x1000000 ✅
-[VMO-WRITE] VMO#1 pages=1 paddr=0x1001000 ✅
-[VMO-WRITE] VMO#2 pages=1 paddr=0x1002000 ✅
-[MAP] Checking page_entry
-[MAP] Entry is None
-```
-
-**Result:** All 3 ELF segments now load correctly without corruption. Kernel progresses to address space mapping.
-
----
-
-## ✅ RESOLVED: VMO#0 len=0 - Stack Corruption (2025-01-19)
-
-### Root Cause: Stack Corruption from Debug Output
-
-**Symptom:** `VMO#0 showed len=0 (empty pages map) during address space mapping`
-
-**Investigation revealed:**
-
-| Initially Suspected | Actual Cause |
-|-------------------|--------------|
-| Heap corruption | ❌ Not - Box<Vmo> was already stable |
-| VMO identity mismatch | ❌ Not - Same pointers throughout |
-| PMM allocation failure | ❌ Not - Pages allocated correctly |
-| **Stack corruption** | ✅ **YES** - Debug output caused struct overlap |
-
-### The Smoking Gun: `vmo_id=524`
-
-Adding SANITY checks immediately after each `segments.push()` revealed:
-
-```
-SANITY seg0 vmo_id=524  (524 = p_filesz!)
-SANITY seg1 vmo_id=2    ✅
-SANITY seg2 vmo_id=3    ✅
-```
-
-**Pattern:** `vmo_id=524` exactly equals `p_filesz=0x20C (524 decimal)`
-
-**Diagnosis:** Struct overlap - VMO struct on stack was being overwritten by ProgramHeader data.
-
-### Fixes Applied
-
-#### Fix #1: Moved `Box::new(vmo)` Before VMO Operations
-
-**Before (vulnerable to stack corruption):**
-```rust
-// src/exec/elf.rs
-let vmo = Vmo::create(aligned_size as usize, vmo_flags)?;
-// Write happens while vmo is still on stack
-vmo.write(0, segment_data)?;
-let boxed_vmo = Box::new(vmo);  // Boxed AFTER operations
-```
-
-**After (protected):**
-```rust
-let vmo = Vmo::create(aligned_size as usize, vmo_flags)?;
-// CRITICAL: Immediately box the VMO before any operations
-let boxed_vmo = Box::new(vmo);
-// Now VMO is on heap, safe from stack corruption
-boxed_vmo.write(0, segment_data)?;
-```
-
-#### Fix #2: Reduced BSS Stack Allocation
-
-**Before (4KB stack array):**
-```rust
-let mut bss_data = [0u8; 4096];  // Large stack allocation
-```
-
-**After (256B chunked):**
-```rust
-let zero_chunk = [0u8; 256];  // Much smaller, loop for large BSS
-```
-
-#### Fix #3: Pre-allocated Vec Capacity
-
-```rust
-let mut segments = Vec::with_capacity(segment_count);  // Prevents reallocation
-```
-
-### Investigation Techniques Used
-
-1. **Pointer identity logging** - Proved VMO instances were identical (not a clone issue)
-2. **SANITY checks after push** - Revealed `vmo_id=524` pattern
-3. **BEFORE RETURN checks** - Showed debug output was causing corruption
-4. **Address logging** - Differentiated struct overwrite from heap corruption
-
-### Key Insight: Clean Zeros Indicate Struct Rebuild
-
-The pattern of seeing `id=0, pages=0` (clean defaults) rather than random corrupted values indicated:
-- Struct overwrite/rebuilding, NOT heap allocator corruption
-- The struct was being reconstructed or overlapped with other data
-
-### Current Status
-
-- ✅ SANITY checks show correct VMO IDs (1, 2, 3)
-- ⚠️ Verbose debug output still causes some stack corruption
-- ✅ Root cause identified: Stack corruption from debug output
-- ⏳ Next: Apply minimal-debug strategy
-
-## 🎯 Next Steps: Minimal-Debug Strategy (2025-01-19)
-
-### The Correct Minimal-Debug Strategy
-
-The investigation has proven that the debug output itself is causing corruption. Apply this strategy exactly.
-
-#### 🚫 What to Remove
-
-Inside `load_elf` and related code:
-
-- ❌ Any per-segment `debug!`, `println!`, or `log!`
-- ❌ Any formatted output using `{}` or `{:?}`
-- ❌ Any debug inside SpinMutex locks
-- ❌ Any debug that allocates buffers (strings, Vecs)
-
-#### ✅ What to Keep (Safe)
-
-**Single invariant check:**
-```rust
-for (i, seg) in segments.iter().enumerate() {
-    if seg.vmo.id() == 0 {
-        panic!("load_elf invariant violated: seg {} has null VMO", i);
-    }
-}
-```
-
-**One single debug print:**
-- Outside loops
-- Outside locks
-- After all allocations are complete
-- Prefer a fixed string + integers only
-
-**Example:**
-```rust
-debug_raw("load_elf completed\n");
-```
-(No formatting if possible)
-
-### Longer-Term Fixes (After Userspace Boots)
-
-Once unblocked, implement these real fixes:
-
-#### 🛡️ 1. Increase Kernel Stack Size
-Current 4 KB stack is tiny. Increase to:
-- 16 KB minimum
-- 32 KB if possible
-
-#### 🛡️ 2. Add Stack Guard Page
-Even a single unmapped page would have caught this instantly.
-
-#### 🛡️ 3. Replace Debug Printing
-Implement proper debug infrastructure:
-- Ring buffer
-- Fixed-size per-CPU buffer
-- Post-boot dump
-
-#### 🛡️ 4. Ban Formatted Debug in Early Boot
-**Rule:** No formatting before scheduler + full VM is up.
-
-### Big Picture Assessment
-
-**You are past the hard part.**
-
-✅ ELF loader is fundamentally correct
-✅ VMO ownership is correct
-✅ Memory zoning works
-✅ Heap is usable
-
-**The remaining failure is tooling, not logic.**
-
-This is exactly where real kernels hit the "debugger becomes the bug" phase.
-
-### Files Modified
-
-- `src/exec/elf.rs` - Box::new timing, BSS allocation, SANITY checks
-- `src/exec/process_loader.rs` - Address logging after return
-- `src/object/vmo.rs` - Pointer identity logging
-- `src/process/address_space.rs` - Pointer identity logging
-
----
-
-## 📋 Phase 4: Userspace & Process Execution
-
-### 4A. ELF Loading & Heap Allocator ✅ COMPLETE (2025-01-20)
-
-**Status:** Phase 4A heap allocator and ELF loading validated complete.
-
-**What Was Proven:**
-- ✅ Heap allocator initializes reliably (64MB at 0x300000)
-- ✅ Heap serves many small + medium allocations without fragmentation
-- ✅ Heap survives ELF loading allocation patterns
-- ✅ Block splitting works correctly
-- ✅ All 3 ELF segments allocated and mapped successfully:
-  - Segment 0: 0x400000
-  - Segment 1: 0x401000
-  - Segment 2: 0x402000
-- ✅ No "no suitable block found" failures during ELF loading
-- ✅ No repeated reuse of the same block (no address reuse corruption)
-- ✅ No vaddr corruption
-- ✅ No allocator-induced crashes
-
-**Fixes Applied:**
-
-1. **Heap Size Increase** (`src/init.rs:403`)
-   - Changed: `16MB → 64MB`
-   - Rationale: Provides headroom for ELF loading and reduces pressure on allocator
-
-2. **MIN_BLOCK_SIZE Increase** (`src/mm/allocator.rs:47`)
-   - Changed: `40 bytes → 1024 bytes`
-   - Rationale: Prevents creation of tiny fragments during block splitting
-   - This is a valid kernel strategy (Linux SLAB/SLUB uses similar minimum object sizes)
-
-**Test Results (Final Run):**
-```
-[HEAP] init base=0x300000 size=64MB
-[ELF] Segment vaddr from ELF: 0x400000
-[ELF] Storing segment with vaddr: 0x400000
-[ELF] Storing segment with vaddr: 0x401000
-[ELF] Storing segment with vaddr: 0x402000
-[MAP] About to map segment at vaddr: 0x400000
-[MAP] About to map segment at vaddr: 0x401000
-[MAP] About to map segment at vaddr: 0x402000
-```
-
-**Known Issue (Not a Phase 4A Blocker):**
-
-⚠️ **Stack Mapping Failure** (moved to Phase 4B)
-
-**Error:** `Failed to map stack`
-
-**Origin:** `address_space.map_vmo()` in `src/exec/process_loader.rs:106`
-
-**Why This Does NOT Block Phase 4A:**
-- Heap allocation succeeded ✅
-- VMO creation succeeded ✅
-- ELF loader completed ✅
-- Failure occurs during virtual memory mapping, not allocation
-- This is Phase 4B/4C territory (address space limits, PMM logic, stack placement)
-
-**Possible Causes (for later debugging):**
-1. Stack vaddr collides with ELF segment range or kernel higher-half mappings
-2. PMM returns pages that are already mapped or outside allowed physical range
-3. Stack mapping size > available contiguous pages
-4. Guard page logic rejecting valid map
-5. PMM exhaustion after segment allocations
-
-**Debugging Approach (for Phase 4B):**
-- Add telemetry to `address_space.map_vmo()` to show requested vaddr, size, and failure reason
-- Check PMM free page count before stack mapping
-- Verify stack vaddr doesn't overlap with mapped segments
-- Examine address space layout to ensure proper guard pages
-
-**Files Modified:**
-- `src/init.rs` - Heap size increased to 64MB
-- `src/mm/allocator.rs` - MIN_BLOCK_SIZE increased to 1024 bytes
-- `src/exec/userspace_exec_test.rs` - Added heap summary telemetry
-
-**Architectural Note:**
-Raising MIN_BLOCK_SIZE is not a hack — it's a policy decision. Early kernel allocators trade memory efficiency for determinism. This can be refined later with:
-- Slab caches
-- Reduced MIN_BLOCK_SIZE
-- Free-block coalescing
-
----
-
-**Minimum Viable Syscall Set (5 syscalls):**
-| Syscall | Purpose | Status |
-|---------|---------|--------|
-| `sys_exit` | Process termination | ✅ COMPLETE |
-| `sys_debug_write` | Console output | ✅ COMPLETE |
-| `sys_write` | Console output | ⏳ TODO (wraps sys_debug_write) |
-| `sys_read` | Console input | ⏳ TODO |
-| `sys_mmap` | Memory allocation | ⏳ TODO |
-| `sys_clock_gettime` | Time queries | ✅ Working |
-
-**Location:** `src/syscall/` (syscall definitions and handlers), `src/arch/amd64/syscall.rs` (MSR setup)
-
----
-
-### 4C. Scheduler Start ⏳ PENDING
-
-**Priority:** 🟠 HIGH - Needed for multi-process
-
-**Tasks:**
-1. Create init process (PID 1)
-2. Load `/sbin/init` ELF
-3. Add to run queue
-4. Enable timer preemption
-5. Implement context switch
-
-**Location:** `src/sched/` (framework exists)
-
----
-
-### 4D. Initial Ramdisk ⏳ PENDING
-
-**Priority:** 🟠 HIGH - Needed to load programs
-
-**Design:**
-- Simple tar-like format for file storage
-- Files embedded in kernel binary
-- Basic file operations: open, close, read, stat
-
-**Files to include:**
-- `/sbin/init` - Init process
-- `/bin/sh` - Shell
-- `/bin/ls`, `/bin/cat`, `/bin/echo` - Core utilities
-
----
-
-### 4E. Console Driver ⏳ LOW PRIORITY
-
-**Priority:** 🟡 LOW - Debug port (0xE9) works for now
-
-**Options:**
-- VGA text mode (0xB8000)
-- Serial console (COM1: 0x3F8)
-
-**Defer until:** Syscalls and scheduler work
-
----
-
-### 4F. Bootable Image ⏳ LOW PRIORITY
-
-**Priority:** 🟢 LOW - Packaging comes LAST
-
-**DO NOT create bootable images until:**
-- ✅ ELF loading works
-- ✅ Syscalls work
-- ✅ Process execution works
-- ✅ At least one userspace program runs
-
----
-
-## 📁 Quick Reference
-
-### Kernel Structure
-```
-/var/www/rustux.com/prod/rustux/
-├── src/
-│   ├── main.rs              # Entry point
-│   ├── init.rs              # Boot initialization, zone config
-│   ├── exec/                # ELF loader, process loader
-│   │   ├── elf.rs           # ✅ ELF parsing/loading
-│   │   ├── process_loader.rs # ✅ Process creation, CR3 switch
-│   │   └── userspace_exec_test.rs # ✅ Test framework
-│   ├── process/             # Process management
-│   │   └── address_space.rs # ⚠️ PAGE TABLE ISOLATION FIX NEEDED
-│   ├── arch/amd64/
-│   │   ├── uspace.rs        # ✅ Userspace transition (IRETQ)
-│   │   ├── syscall.rs       # ✅ MSR-based syscall setup
-│   │   └── mexec.rs         # ✅ Alternative mexec implementation
-│   ├── object/              # VMOs, handles, capabilities
-│   ├── mm/
-│   │   ├── pmm.rs           # ✅ Vec-based PMM (zones: kernel 64MB, user 64MB)
-│   │   └── allocator.rs     # ✅ Heap allocator (64MB, MIN_BLOCK_SIZE=1024)
-│   └── syscall/             # ✅ Syscall interface (sys_debug_write, sys_process_exit)
-└── test-userspace/
-    └── hello.elf           # ✅ Test binary (9KB)
-```
-
-### Build Commands
-```bash
-# Build kernel
-cd /var/www/rustux.com/prod/rustux
-cargo build --release --target x86_64-unknown-uefi --features uefi_kernel
-
-# Test in QEMU
-./test-qemu.sh
-
-# Build userspace test
-cd test-userspace
-./build.sh
-```
-
----
-
-## 🎯 Near-Term Goal: Interactive CLI Kernel
-
-**The immediate milestone is a CLI-capable live kernel.**
-
-### Requirements (In Scope)
-
-**Userspace Process Execution:**
-- [x] ELF binaries load correctly
-- [x] Per-process PML4 created
-- [x] CR3 switch works
-- [x] TSS RSP0 configured
-- [x] IRETQ executes (no triple fault)
-- [x] **USER bit set at all page-table levels** ✅ RESOLVED
-- [x] Separate PDP/PD/PT for userspace ✅ RESOLVED
-- [ ] User-mode memory reads work (in progress with PMM call numbering)
-- [ ] "Hello from userspace!" prints
-- [ ] sys_debug_write callable from userspace
-- [ ] sys_process_exit works cleanly
-
-**CLI Shell Functionality:**
-- [ ] Read from terminal
-- [ ] Write to terminal
-- [ ] Minimal shell loop (read → parse → execute)
-- [ ] Command execution
-- [ ] Process spawning (basic)
-
-### Non-Requirements (Explicitly Out of Scope)
-
-**Do NOT let these block CLI development:**
-- ❌ Multiboot support
-- ❌ Initramfs
-- ❌ Complex filesystem drivers (use simple RAM-backed FS)
-- ❌ Bootable images (deploy later)
-- ❌ Live USB (deploy later)
-
-### Success Criteria
-
-**When the kernel can:**
-1. Execute a userspace ELF binary
-2. The binary reads from stdin
-3. The binary writes to stdout
-4. The binary can spawn other processes
-5. A simple shell loop runs interactively
-
-**Then we have an interactive CLI kernel.**
-
-### Shell UI Requirements
-
-**🎨 Dracula Theme Preservation (Non-Functional Requirement)**
-
-**The Dracula color theme is considered part of the developer UX and MUST be preserved.**
-
-**Required Colors:**
-- Background: `#282a36` (dark)
-- Current Line: `#44475a` (lighter dark)
-- Foreground: `#f8f8f2` (light gray)
-- Comment: `#6272a4` (purple)
-- Cyan: `#8be9fd` (light blue)
-- Green: `#50fa7b` (bright green)
-- Orange: `#ffb86c` (orange)
-- Pink: `#ff79c6` (pink)
-- Purple: `#bd93f9` (purple)
-- Red: `#ff5555` (red)
-- Yellow: `#f1fa8c` (yellow)
-
-**This may sound cosmetic, but it prevents "simplification" that removes developer experience features.**
-
-**Future refactors MUST NOT:**
-- Remove color support
-- Simplify to monochrome "for cleanliness"
-- Hardcode colors (make them configurable)
-- Lose the Dracula aesthetic
-
-**Reference:** `/var/www/rustux.com/prod/kernel/kernel-efi/src/framebuffer.rs` (Dracula color definitions)
-
----
-
-## 📝 Development Notes (Critical Lessons Learned)
-
-### Environment Validation Before Kernel Debugging
-
-**🚨 CRITICAL INSIGHT: Absence of debug output does NOT imply kernel failure.**
-
-**Always validate the execution environment BEFORE debugging kernel code:**
-
-1. **Check QEMU version:**
-   ```bash
-   /usr/local/bin/qemu-system-x86_64 --version
-   # Must be: QEMU emulator version 7.2.0
-   ```
-
-2. **Verify firmware path:**
-   ```bash
-   ls -la /usr/local/share/qemu/edk2-x86_64-code.fd
-   # Must exist and be ~3.6MB
-   ```
-
-3. **Test with boot_probe.efi:**
-   ```rust
-   #[entry]
-   fn main() -> Status {
-       unsafe {
-           core::arch::asm!("out dx, al",
-               in("dx") 0xE9u16,
-               in("al") b'!',
-               options(nomem, nostack));
-       }
-       loop {}
-   }
-   ```
-   If '!' doesn't appear in debug log, the environment is broken.
-
-### Why This Matters
-
-**QEMU/OVMF mismatches can FULLY prevent EFI application execution with NO ERRORS.**
-
-- The firmware loads
-- No crash occurs
-- No debug output appears
-- No entrypoint executes
-
-**This looks exactly like a kernel hang, but it's actually an environment failure.**
-
-### Debugging Protocol
-
-**When "no output" occurs:**
-
-1. **FIRST:** Check environment (QEMU version, firmware path)
-2. **SECOND:** Test with boot_probe.efi
-3. **THIRD:** If boot_probe fails, fix environment
-4. **ONLY THEN:** Debug kernel code
-
-**This prevents circular debugging loops where:**
-- You add debug output → still no output
-- You simplify code → still no output
-- You revert changes → still no output
-- All while the environment was broken
-
-### The "Blind Spot" in LLM Debugging
-
-From inside the VM, it is impossible to detect that the firmware never dispatched your image.
-
-**Claude (or any LLM) cannot distinguish between:**
-- Kernel code that doesn't execute (environment issue)
-- Kernel code that executes but produces no output (kernel bug)
-
-**This is why environment validation MUST come first.**
-
-### Documented Working Configuration
-
-**This configuration is PROVEN to work:**
-```bash
-/usr/local/bin/qemu-system-x86_64 \
-    -machine q35 \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/local/share/qemu/edk2-x86_64-code.fd \
-    -drive if=pflash,format=raw,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
-    -drive file=rustux.img,format=raw \
-    -debugcon file:/tmp/rustux-debug.log \
-    -serial mon:stdio \
-    -display none \
-    -no-reboot \
-    -m 512M
-```
-
-**If deviating from this, validate FIRST before touching kernel code.**
-
----
-
-## 🎯 Success Criteria
-
-### Phase 4A Complete ✅ (2025-01-20)
-- [x] VMO identity issue resolved
-- [x] Heap allocator fixed (64MB, MIN_BLOCK_SIZE=1024)
-- [x] Address space creation works
-- [x] ELF segments map into address space
-- [x] Kernel zone exhaustion fixed (14MB → 64MB)
-- [x] Page table allocation succeeds
-
-### Phase 4B Complete When (CURRENT):
-- [x] ELF binaries load correctly
-- [x] Per-process PML4 created
-- [x] CR3 switch works
-- [x] TSS RSP0 configured
-- [x] IRETQ executes (no triple fault)
-- [x] **USER bit set at all page-table levels** ✅ RESOLVED
-- [x] Separate PDP/PD/PT for userspace ✅ RESOLVED
-- [ ] User-mode memory reads work (in progress with PMM call numbering)
-- [ ] "Hello from userspace!" prints
-- [ ] sys_debug_write callable from userspace
-- [ ] sys_process_exit works cleanly
-
-### Phase 4 Complete When:
-- [ ] Init process (PID 1) runs
-- [ ] Can execute programs from initrd
-- [ ] Shell runs interactively
-- [ ] Multiple processes can run
-
----
-
-## 📊 Completed Work Summary
-
-### Phase 2C: Kernel Migration ✅ COMPLETE
-- ~13,500 lines of kernel code migrated to new architecture
-- All core modules implemented (AMD64, MM, objects, sync, syscalls)
-- Kernel boots successfully in QEMU with UEFI
-
-### Phase 4A: ELF Loading & Heap Allocator ✅ COMPLETE (2025-01-20)
-- Heap allocator fixed (64MB heap, MIN_BLOCK_SIZE=1024 bytes)
-- Kernel zone exhaustion resolved (14MB → 64MB)
-- ELF loader fully implemented and tested
-- All ELF segments map at expected addresses (0x400000, 0x401000, 0x402000)
-- Address space framework complete with page table management
-- Process loader ties ELF loading with address space creation
-
-### Phase 4B (In Progress - 2025-01-21)
-- Per-process PML4 creation ✅
-- Kernel PML4 entries copied to process PML4 ✅
-- CR3 switch working ✅
-- TSS RSP0 configured ✅
-- User segments (DS, ES, SS) configured ✅
-- IRETQ executes without triple fault ✅
-- ❌ **BLOCKED:** USER bit propagation violation (needs separate PDP/PD/PT)
-
-**Key Files Created/Modified:**
-- `src/exec/elf.rs` - ELF parser (490 lines)
-- `src/process/address_space.rs` - Address space management
-- `src/exec/process_loader.rs` - Process loading
-- `src/arch/amd64/uspace.rs` - Userspace transition
-- `src/init.rs` - Updated with boot allocator for PMM
+## 📝 Critical Technical Decisions
+
+### Phase 5 Summary
+- Process table with 256 slots, indexed by PID
+- Round-robin scheduler with context switching
+- Ramdisk for embedded files
+- Init process (PID 1) auto-loads on boot
+- sys_spawn() for spawning from paths
+
+### Phase 6 Architecture (Upcoming)
+- **Kernel**: Keyboard driver, framebuffer, console (rustux/)
+- **Userspace**: Shell, built-ins, theming (rustica/)
+- **Display**: Kernel owns framebuffer, userspace writes via syscalls
+- **Input**: Keyboard IRQ → buffer → sys_read() unblocks process
+- **Theming**: Userspace-owned, Dracula default
 
 ---
 
 ## 📞 Resources
 
 - **Repository:** https://github.com/gitrustux/rustux
-- **Userspace CLI:** `/var/www/rustux.com/prod/rustica/tools/cli/` (~5,150 lines, complete)
 - **Documentation:** See ARCHITECTURE.md for kernel design details
+- **Issue Tracker:** https://github.com/gitrustux/rustux/issues
+
+**Legacy Code References:**
+- `/var/www/rustux.com/prod/kernel` - Old kernel (mostly migrated to rustux/)
+- `/var/www/rustux.com/prod/rustica` - Userspace OS and shell (to be refactored)
+
+---
+
+## 📋 Phase 6D: Rustica OS Migration ⏳ NEXT
+
+**Overview:** Reintegrate the legacy Rustica OS tree into the new kernel infrastructure.
+
+**Timeline:** 2-3 weeks
+**Prerequisites:** Phase 6C complete (interactive shell working)
+**Goal:** Make Rustica OS a proper userspace distribution running on the Rustux kernel
+
+---
+
+### Phase 6D.1: Architecture Clarification
+
+**Rustica OS is no longer a "kernel-bundled OS"**
+- It is a **userspace distribution** running on the Rustux kernel
+- Kernel provides low-level services only
+- All user-facing tools live in userspace
+
+### Phase 6D.2: Migration Strategy
+
+**Old Rustica userland** → becomes `/usr` + `/bin`
+
+**Old scripts** → shell builtins or userspace programs
+
+**Old tools** → recompiled against new syscall ABI
+
+**Directory Structure:**
+```
+/prod
+ ├── rustux/          # kernel only (OS-agnostic)
+ ├── rustica/         # userspace OS (distribution)
+ │    ├── bin/         # user programs
+ │    │    ├── shell
+ │    │    ├── hello
+ │    │    └── counter
+ │    ├── etc/
+ │    │    └── theme.toml   (Dracula theme config)
+ │    ├── usr/         # user data
+ │    └── docs/
+ └── tools/           # build tools
+```
+
+### Phase 6D.3: CLI Location
+
+**The CLI is a userspace program, NOT part of the kernel.**
+
+This separation ensures:
+- Kernel stays OS-agnostic
+- CLI can be updated independently
+- GUI later will sit next to CLI, not replace it
+- Multiple shells can coexist
+
+---
+
+## 📋 Phase 6E: Live Image First Policy 🔄
+
+**Overview:** Shift from QEMU emulation to UEFI hardware testing as primary development target.
+
+**Timeline:** Ongoing
+**Goal:** All debugging must be framebuffer-visible or persisted to disk
+
+---
+
+### Phase 6E.1: QEMU is Optional
+
+**QEMU is now optional for development only.**
+
+Primary test target is **real UEFI hardware**.
+
+### Phase 6E.2: Debug Requirements
+
+All debug must be:
+- **Framebuffer-visible** (see VNC display)
+- Or persisted to disk
+- Or LED / color-code based
+
+This aligns with the **Silent Boot Phase** discipline - no port I/O between UEFI entry and ExitBootServices.
+
+### Phase 6E.3: Live USB Boot
+
+**Boot flow:**
+```
+UEFI firmware → BOOTX64.EFI → kernel → init → shell
+```
+
+**System boots directly into:**
+- Framebuffer console with Dracula theme
+- Interactive shell prompt
+- No installer required (for testing)
+
+---
+
+## 📋 Phase 7: Minimal GUI Path ⏳ PLANNED
+
+**Overview:** Add windowed GUI capabilities to the Rustux OS.
+
+**Estimated Timeline:** 4-6 weeks for minimal windowed GUI, 2-3 months for Wayland-like compositor
+
+**Prerequisites:** Phase 6 complete (shell, keyboard, framebuffer, theming)
+
+**Goal:** Provide a basic GUI with mouse input, windows, and simple applications
+
+---
+
+### Phase 7A: Input + Drawing Primitives (1-2 weeks)
+
+**Kernel additions (small):**
+- Mouse driver (PS/2 or USB HID)
+- New syscalls: `sys_fb_map()` → map framebuffer into userspace OR `sys_draw()` primitives (safer)
+
+**Userspace additions:**
+- Mouse cursor renderer
+- Event queue (MouseMove, Click, KeyPress)
+- Simple drawing primitives
+
+**Deliverables:**
+- [ ] Mouse driver working
+- [ ] Framebuffer mapping syscall
+- [ ] Event queue implementation
+- [ ] Mouse cursor visible on screen
+
+**At this point, you can draw and click things.**
+
+---
+
+### Phase 7B: Single-Process GUI Server (2-3 weeks)
+
+**Think early Mac OS, not Wayland.**
+
+**One userspace process runs the GUI server:**
+```
+rustica-gui
+```
+
+**GUI Server Responsibilities:**
+- Owns framebuffer
+- Owns input
+- Draws:
+  - Windows
+  - Buttons
+  - Text
+- Launches apps as clients
+
+**No IPC yet** — apps call GUI APIs directly.
+
+**This gives you:**
+- Overlapping windows
+- Focus management
+- A mouse pointer
+- Menus
+
+---
+
+### Phase 7C: Client Apps (1-2 weeks)
+
+**Apps link against:**
+```
+librustica_gui
+```
+
+**Library exposes:**
+- `Window::new()`
+- `Button::new()`
+- `Label::new()`
+- `on_click(...)`
+
+**Internally:**
+- Draw → framebuffer
+- Events → callbacks
+
+**This is where Rust shines.**
+
+---
+
+### GUI Architecture Overview
+
+**Layering:**
+```
+┌─────────────────────────────────────┐
+│           Application (Rust)          │
+│         (uses librustica_gui)        │
+├─────────────────────────────────────┤
+│          GUI Server (rustica-gui)    │
+│    (owns framebuffer, input events)   │
+├─────────────────────────────────────┤
+│              Rustux Kernel            │
+│  (syscalls, scheduler, drivers)      │
+├─────────────────────────────────────┤
+│              UEFI Firmware            │
+│         (BOOTX64.EFI)                 │
+└─────────────────────────────────────┘
+```
+
+**CLI is NOT throwaway** — it becomes:
+- Fallback console
+- Recovery mode
+- SSH-like interface later
+
+---
+
+## 🎯 Phase 7 Success Criteria
+
+Phase 7 is complete when:
+
+- [ ] Mouse input works (PS/2 or USB HID)
+- [ ] Framebuffer can be mapped into userspace
+- [ ] GUI server can draw windows and buttons
+- [ ] Event queue processes mouse and keyboard events
+- [ ] Simple client apps can be built and linked
+
+---
+
+## 🔧 Development Quick Reference (Updated)
+
+### Build Kernel
+```bash
+cd /var/www/rustux.com/prod/rustux/
+cargo build --release --target x86_64-unknown-uefi --features uefi_kernel
+```
+
+### Build Shell (userspace C)
+```bash
+cd /var/www/rustux.com/prod/rustux/test-userspace
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o shell.elf
+x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o init.elf
+```
+
+### Test with QEMU (Optional)
+```bash
+/usr/local/bin/qemu-system-x86_64 \
+  -bios /usr/share/qemu/OVMF.fd \
+  -drive format=raw,file=disk.img \
+  -m 512M \
+  -vnc :0
+```
+
+---
+
+## 📝 Critical Technical Decisions (Updated)
+
+### Phase 5 Summary
+- Process table with 256 slots, indexed by PID
+- Round-robin scheduler with context switching
+- Ramdisk for embedded files
+- Init process (PID 1) auto-loads on boot
+- sys_spawn() for spawning from paths
+
+### Phase 6 Summary (Complete)
+- **Input:** PS/2 keyboard driver with scancode to ASCII conversion
+- **Display:** Framebuffer driver with text console (16x8 font)
+- **Shell:** Interactive C shell with Dracula theme
+- **Process Management:** Multi-process scheduler, VFS abstraction
+- **Syscalls:** read, write, open, close, lseek, spawn, exit, getpid, getppid, yield
+
+### Phase 7 Architecture (Planned)
+- **GUI Server:** Single userspace process owning framebuffer
+- **Input:** Mouse + keyboard events
+- **Drawing:** Framebuffer mapping or draw syscalls
+- **Apps:** Link against librustica_gui
+
+**Key Design Decision:**
+- CLI remains primary interface (recovery, debugging)
+- GUI is additive, not replacement
+- Theme consistency across CLI and GUI (Dracula)
+
+---
+
+## 📞 Resources
+
+- **Repository:** https://github.com/gitrustux/rustux
+- **Documentation:** See ARCHITECTURE.md for kernel design details
+- **Issue Tracker:** https://github.com/gitrustux/rustux/issues
+
+**Project Locations:**
+- **Kernel:** `/var/www/rustux.com/prod/rustux/`
+- **Userspace/OS:** `/var/www/rustux.com/prod/rustica/`
+- **Legacy Kernel:** `/var/www/rustux.com/prod/kernel` (deprecated, migrated to rustux/)
+
+---
+
+**END OF PLAN**
+Last Updated: 2025-01-23 - Phase 5 COMPLETE, Phase 6A-6C COMPLETE, Phase 6D-7 PLANNED
+
+**About the Old Installer:**
+`/var/www/rustux.com/prod/installer/` was for the OLD Linux-based Rustica OS and is now OBSOLETE.
+It used GRUB + Linux kernel + initramfs. The new Rustux kernel is a standalone UEFI
+application that boots directly without GRUB. Do not use the old installer for the new kernel.

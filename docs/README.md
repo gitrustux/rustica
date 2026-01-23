@@ -2,6 +2,127 @@
 
 A modern Linux distribution built on Rust, featuring a complete Wayland desktop environment, mobile support, and advanced security capabilities.
 
+## 🧪 Kernel Development Status (January 2025)
+
+### RUSTUX Microkernel - Phase 4 Complete ✅
+
+The RUSTUX microkernel (`/var/www/rustux.com/prod/kernel/`) is a Rust-based microkernel with advanced memory management and userspace execution.
+
+**Location:** `/var/www/rustux.com/prod/rustux/`
+
+#### Completed Phases
+
+##### Phase 4A: ELF Loading & Heap Allocator ✅
+- Per-process address spaces
+- 64MB heap allocator with MIN_BLOCK_SIZE=1024
+- ELF binary loading with segment mapping
+- VMO (Virtual Memory Object) abstraction
+- Page table allocation and management
+
+##### Phase 4B: First CPL3 Instruction ✅
+- Page table isolation (kernel vs userspace)
+- Per-process PML4 creation
+- PML4 ownership rules enforced
+- Canary reads before CR3 load
+- CR3 switching with canary verification
+- IRETQ to userspace
+- TSS RSP0 configuration
+- User segments (DS, ES, SS) configured
+- Silent Boot Phase (no port I/O before ExitBootServices)
+
+##### Phase 4C: Syscalls & Userspace Memory ✅
+- `int 0x80` syscall interface
+- Syscall dispatch table (30+ syscall numbers)
+- sys_exit() - process termination
+- sys_debug_write() - kernel-mediated debug output
+- Argument/return handling via interrupt frame
+- Userspace can call kernel and terminate cleanly
+
+#### Key Technical Achievements
+
+**Memory Management:**
+- Physical Memory Manager (PMM) with boot allocator
+- 4-level page tables (PML4 → PDPT → PD → PT)
+- User/Supervisor page permissions (U bit)
+- Page table isolation prevents kernel/userspace interference
+
+**Boot Process:**
+- UEFI firmware support (EDK2/OVMF 7.2.0)
+- Silent Boot Phase enforcement
+- ExitBootServices confirmation
+- Framebuffer progress indicators (RED→GREEN→BLUE→WHITE→CYAN→YELLOW)
+
+**Userspace Execution:**
+- Process address spaces with isolated page tables
+- IRETQ frame structure for CPL3 transition
+- Safe kernel text/stack access after CR3 switch
+- Syscall interface via `int 0x80`
+- Userspace ELF loading and execution verified
+
+#### Current Capabilities
+
+✅ UEFI boot from firmware
+✅ Physical memory management
+✅ Virtual memory with 4-level page tables
+✅ Process isolation with per-page tables
+✅ Userspace ELF execution
+✅ Syscall interface (int 0x80)
+✅ Process termination
+
+#### Frameboot Progress Indicators
+
+The kernel uses framebuffer color fills to show boot progress:
+- **RED** - EFI entry point reached
+- **GREEN** - ExitBootServices succeeded
+- **BLUE** - CR3 load succeeded
+- **WHITE** - About to IRETQ to userspace
+- **CYAN** (top half) - Syscall handler called
+- **YELLOW** (full screen) - Process exited
+
+#### Development Environment
+
+**Required Configuration (Pinned):**
+```bash
+QEMU: /usr/local/bin/qemu-system-x86_64 (version 7.2.0)
+Firmware: EDK2 (bundled with QEMU 7.2)
+Machine Type: q35
+```
+
+**Build:**
+```bash
+cd /var/www/rustux.com/prod/rustux/
+cargo build --release --target x86_64-unknown-uefi --features uefi_kernel,userspace_test
+```
+
+**Run:**
+```bash
+/usr/local/bin/qemu-system-x86_64 \
+  -machine q35 \
+  -bios /usr/share/qemu/OVMF.fd \
+  -drive format=raw,file=disk.img \
+  -m 512M
+```
+
+#### Known Limitations
+
+- Debug output via port 0xE9 not visible in current QEMU/OVMF configuration
+- No scheduler yet (single process only)
+- No multi-process support
+- No signal handling
+- Process termination halts (no cleanup)
+
+#### Next Steps
+
+Potential Phase 5 areas:
+- Process scheduler (multiple processes)
+- Signal handling
+- Process cleanup and reaping
+- Additional syscalls (read, write, spawn)
+- Inter-process communication
+- Virtual filesystem
+
+---
+
 ## Directory Structure
 
 - `releases/` - Official releases (CLI, Desktop, Server)
@@ -1148,6 +1269,7 @@ MIT License - See LICENSE file for details
 
 ---
 
-*Last updated: January 8, 2026*
+*Last updated: January 22, 2025*
 
-**Status**: ✅ All phases (0-12) complete - Production ready
+**Status:** ✅ All phases (0-12) complete - Production ready (userspace)
+**Kernel:** ✅ Phase 4 Complete - Userspace execution with syscalls (in development)
