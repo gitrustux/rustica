@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #20 added (comprehensive interrupt path diagnostics), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #21 added (8042 controller config check), awaiting test results
 
 ---
 
@@ -321,38 +321,75 @@ PIC masks: PIC1=0x... PIC2=0x...
 **Code Changes:**
 - Modified `runtime.rs` - Added 4 diagnostic tests in interrupt path
 
-```rust
-// When gsi == 1 (legacy routing): use ExtINT mode
-// When gsi != 1 (ACPI override): use Fixed mode
-let low_dword = if gsi == 1 {
-    (7 << 8)      // ExtINT delivery mode
-        | (0 << 11)   // Physical destination mode
-        | (0 << 16)   // Unmasked
-} else {
-    IRQ1_VECTOR
-        | (0 << 8)    // Fixed delivery mode
-        | (0 << 11)   // Physical destination mode
-        | polarity_bit
-        | trigger_bit
-        | (0 << 16)   // Unmasked
-};
+### Fix #21: 8042 PS/2 Controller Configuration Byte Check ✅ (NEW FIX!)
+**Problem:** Fix #20 diagnostics revealed:
+- ✅ MSR is correct (0xFEE00900 - x2APIC disabled, APIC enabled, base = 0xFEE00000)
+- ✅ LAPIC MMIO is working (SVR readback succeeded)
+- ✅ IOAPIC is configured (Vec=0x41 Dest=0x00 Masked=NO)
+- ✅ CPU IF flag is ENABLED
+- ✅ Legacy PIC is disabled (PIC1=0xFF PIC2=0xFF)
+- ❌ **BUT keyboard reset didn't trigger '!' - PS/2 keyboard isn't generating IRQs!**
+
+**Root Cause:** The 8042 PS/2 keyboard controller has a configuration byte at port 0x60 that controls whether IRQ1 is enabled. If bit 0 is 0, the keyboard will NOT generate interrupts even though everything else is configured correctly.
+
+**8042 Configuration Byte Format:**
+- Bit 0: IRQ1 enable (1 = enabled, 0 = disabled) ← **THIS IS THE SMOKING GUN**
+- Bit 1: IRQ12 (mouse) enable
+- Bit 2: System flag (POST passed)
+- Bit 3: Must be 0
+- Bit 4: Keyboard inhibit (1 = disabled)
+- Bit 5: Must be 0
+- Bit 6: Translation mode (1 = AT->XT scan code translation)
+- Bit 7: Must be 0
+
+**Fix:** Read the 8042 configuration byte:
+1. Send command 0x20 (Read Configuration Byte) to port 0x64
+2. Read configuration byte from port 0x60
+3. If bit 0 is 0 (IRQ1 disabled), enable it:
+   - Send command 0x60 (Write Configuration Byte) to port 0x64
+   - Write new config with bit 0 set to port 0x60
+4. Re-read to verify the change took effect
+
+**Expected Output:**
+```
+8042 Config: 0x?? IRQ1=ENABLED
+```
+or
+```
+8042 Config: 0x?? IRQ1=DISABLED - Enabling...
+New Config: 0x?? IRQ1=ENABLED!
 ```
 
----
-let irq1_override = unsafe {
-    match acpi::find_rsdp() {
-        Some(rsdp) => acpi::find_irq1_override(rsdp),
-        None => acpi::Irq1Override::DEFAULT,
-    }
-};
+**Diagnostic Interpretation:**
+- LIME pixel (7,0) + "IRQ1=ENABLED" → Keyboard controller already configured correctly
+- RED pixel (7,0) + "IRQ1=DISABLED - Enabling..." → This was the problem! Should fix it.
+- If "STILL DISABLED" after write → 8042 controller is non-functional or locked
 
-// NEW: Use GSI-based offset (not hardcoded 0x12)
-let gsi = irq1_override.gsi;
-let redir_offset = 0x10 + (2 * gsi as u32);
+**Code Changes:**
+- Modified `runtime.rs` - Added 8042 configuration byte check and enable after keyboard init
 
-// NEW: Use polarity and trigger mode from ACPI
-let polarity_bit = if irq1_override.active_low { 1 << 13 } else { 0 << 13 };
-let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
+```rust
+// Read 8042 configuration byte
+for _ in 0..1000 {
+    let status = inb(KBD_CMD_PORT);
+    if (status & 0x02) == 0 { break; }  // Input buffer empty
+}
+outb(KBD_CMD_PORT, 0x20);  // Read config command
+
+for _ in 0..1000 {
+    let status = inb(KBD_CMD_PORT);
+    if (status & 0x01) != 0 { break; }  // Output buffer full
+}
+let config = inb(KBD_DATA_PORT);
+
+// Check if IRQ1 is enabled (bit 0)
+let irq1_enabled = (config & 0x01) != 0;
+
+if !irq1_enabled {
+    // Enable IRQ1 by writing new configuration
+    outb(KBD_CMD_PORT, 0x60);  // Write config command
+    outb(KBD_DATA_PORT, config | 0x01);  // Set bit 0
+}
 ```
 
 ---
@@ -360,9 +397,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `2c4487937233ae2932fb00085d80b42ee6c046502b18f2f4db2e096d644f352a`
+**SHA256:** `e0ee28ef538eb729370d2819b206f36d4c1cbe8f89f88891cf560846c78e0ef1`
 
-**This image includes all 20 fixes listed above.**
+**This image includes all 21 fixes listed above.**
 
 ---
 
