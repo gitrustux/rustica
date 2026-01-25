@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #16 added (re-read MSR after wrmsr), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #17 added (properly read full 64-bit MSR), awaiting test results
 
 ---
 
@@ -209,6 +209,42 @@ init_keyboard_interrupts(); // Second - installs IRQ entries
 - Modified `runtime.rs` - Re-read MSR after wrmsr, verify mode transition
 - Added visual indicator: Cyan pixel (4,0) if xAPIC confirmed, Magenta if still x2APIC
 
+### Fix #17: Properly Read Full 64-Bit MSR Value ✅ (NEW FIX!)
+**Problem:** The `rdmsr` instruction returns a 64-bit value split across EDX:EAX (two 32-bit registers). The code was using `out("rax") msr_value` which only captured EAX - the upper 32 bits from EDX were being lost.
+**Root Cause:**
+```rust
+// WRONG - only reads lower 32 bits into msr_value
+core::arch::asm!(
+    "rdmsr",
+    in("ecx") IA32_APIC_BASE,
+    out("rax") msr_value,  // ❌ Only gets EAX (lower 32 bits)
+    options(nostack, preserves_flags, readonly)
+);
+```
+
+**Impact:** The APIC base address (bits 12-35) is in the upper bits, so it was being truncated/corrupted. This caused:
+- `apic_base_from_msr = msr_value & 0xFFFF_F000` gave garbage
+- MMIO writes went to the wrong LAPIC address
+- Interrupts never fired because LAPIC wasn't actually configured
+- Keyboard stayed in polling mode forever
+
+**Fix:** Capture EAX and EDX separately, then combine into full 64-bit value:
+```rust
+// CORRECT - reads full 64-bit MSR value
+let mut eax: u32;
+let mut edx: u32;
+core::arch::asm!(
+    "rdmsr",
+    in("ecx") IA32_APIC_BASE,
+    out("eax") eax,
+    out("edx") edx,
+    options(nostack, preserves_flags, readonly)
+);
+let msr_value = (edx as u64) << 32 | (eax as u64);
+```
+**Code Changes:**
+- Modified `runtime.rs` - Both rdmsr calls now properly capture EAX and EDX
+
 ```rust
 // When gsi == 1 (legacy routing): use ExtINT mode
 // When gsi != 1 (ACPI override): use Fixed mode
@@ -248,9 +284,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `0632719afd13df03693277da4298421faee1464f437bd756a651f5df4bed3bac`
+**SHA256:** `c603eb0889a89e3132fd2a2415a1b30313bbfdcc05081c4a39b32335a8451318`
 
-**This image includes all 16 fixes listed above.**
+**This image includes all 17 fixes listed above.**
 
 ---
 
@@ -350,18 +386,18 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #16 (re-read MSR after wrmsr) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #17 (properly read full 64-bit MSR) has been implemented and built. Awaiting test results.
 
-**Expected Behavior After Fix #16:**
-- x2APIC is disabled (if detected)
-- MSR is re-read to verify mode transition
-- xAPIC mode is confirmed before proceeding
-- Keyboard IRQ should now work with proper LAPIC MMIO access
+**Expected Behavior After Fix #17:**
+- rdmsr properly captures both EAX and EDX registers
+- APIC base address is correctly extracted from full 64-bit value
+- LAPIC MMIO writes go to the correct address (0xFEE00000)
+- Keyboard IRQ should now work with properly configured LAPIC
 
 **Visual Indicators:**
 - Red pixel at (3,0) = x2APIC was detected
 - Green pixel at (3,0) = xAPIC mode was already active
-- **Cyan pixel at (4,0) = xAPIC mode CONFIRMED after re-read**
+- Cyan pixel at (4,0) = xAPIC mode CONFIRMED after re-read
 - Magenta pixel at (4,0) = x2APIC still active or APIC disabled (error)
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
@@ -383,6 +419,7 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 - ✅ CPU interrupt acceptance (Fix #14 - hlt test showed IRQs not reaching CPU)
 - ✅ x2APIC mode blocking MMIO (Fix #15 - disable x2APIC before LAPIC init)
 - ✅ Stale MSR value after wrmsr (Fix #16 - re-read MSR to verify mode transition)
+- ✅ Truncated MSR read (Fix #17 - properly capture EAX and EDX for full 64-bit value)
 
 ---
 
@@ -467,4 +504,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #16 added (re-read MSR after wrmsr), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #17 added (properly read full 64-bit MSR), awaiting test results
