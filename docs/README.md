@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #18 added (emergency diagnostic output), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #19 added (LAPIC MMIO verification), awaiting test results
 
 ---
 
@@ -267,6 +267,26 @@ MODE: xAPIC OK
 - If NO pixels appear → Code is crashing BEFORE the MSR re-read
 - If NO MSR value prints → Code is crashing before print output
 
+**Test Results:** MSR value confirmed correct (0x00000000FEE00900):
+- x2APIC disabled (bit 10 = 0) ✓
+- APIC enabled (bit 11 = 1) ✓
+- APIC base = 0xFEE00000 ✓
+- But keyboard still doesn't work!
+
+### Fix #19: Verify LAPIC MMIO is Actually Responding ✅ (NEW FIX!)
+**Problem:** MSR shows LAPIC is correctly configured (x2APIC disabled, APIC enabled, base = 0xFEE00000), IOAPIC is configured (green line), but keyboard still doesn't work. Need to verify LAPIC MMIO is actually responding to writes.
+**Hypothesis:** The MSR looks perfect, but LAPIC MMIO might not be responding despite the correct MSR value. This could happen if:
+- x2APIC mode can't be disabled on this hardware
+- There's a hidden configuration issue blocking MMIO
+- The LAPIC is in a weird state that MMIO can't access
+
+**Fix:** After writing to SVR register (0x1FF to enable LAPIC), read it back to verify MMIO is working. If readback doesn't match what we wrote, MMIO isn't working.
+**Diagnostic Interpretation:**
+- LIME pixel (5,0) + "SVR readback OK" → LAPIC MMIO is working, issue is elsewhere
+- ORANGE pixel (5,0) + "SVR write failed! Got: 0x..." → LAPIC MMIO is NOT working!
+**Code Changes:**
+- Modified `runtime.rs` - Added SVR readback verification after LAPIC enable
+
 **Code Changes:**
 - Modified `runtime.rs` - Added emergency diagnostic section after MSR re-read
 - All diagnostic pixels now drawn before any early returns
@@ -311,9 +331,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `696672edc1e74e5d040449ae65aa64e5028a89b162cfde5d3d2a89cbe8b8fd28`
+**SHA256:** `f192990322dfcf8e0170a6c797de9aa39f17a6013536d7a37bc5a4c817f66b72`
 
-**This image includes all 18 fixes listed above.**
+**This image includes all 19 fixes listed above.**
 
 ---
 
@@ -413,24 +433,30 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #18 (emergency diagnostic output) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #19 (LAPIC MMIO verification) has been implemented and built. Awaiting test results.
 
-**Expected Output After Fix #18:**
-- ALL diagnostic pixels should be visible at (1,0), (2,0), (3,0), (4,0)
-- MSR value printed in hex: "MSR=0x[value] BASE=0xFEE0"
-- Mode status printed: "MODE: xAPIC OK" or "MODE: x2APIC STILL ACTIVE"
+**Previous Test Result (Fix #18):**
+- MSR confirmed correct: 0x00000000FEE00900
+- x2APIC disabled (bit 10 = 0) ✓
+- APIC enabled (bit 11 = 1) ✓
+- APIC base = 0xFEE00000 ✓
+- But keyboard still doesn't work!
+
+**Expected Output After Fix #19:**
+- Additional diagnostic pixel at (5,0)
+- "LAPIC MMIO: SVR readback OK" message if MMIO working
+- "LAPIC ERROR: SVR write failed! Got: 0x..." if MMIO not working
 
 **Visual Indicators:**
 - (1,0) Yellow/Red = APIC base address check
 - (2,0) Blue = BSP APIC ID (0 is unusual but valid)
 - (3,0) Red/Green = Was x2APIC detected?
 - (4,0) Cyan/Magenta = xAPIC mode confirmation
+- **(5,0) LIME/ORANGE = LAPIC MMIO verification** (NEW!)
 
 **Diagnostic Guide:**
-- If you see MSR=0xBASE=0xFEE0 + MODE: xAPIC OK → All checks passed, issue is elsewhere
-- If MODE: x2APIC STILL ACTIVE → x2APIC disable failed (MSR write ignored)
-- If BASE != 0xFEE0 → APIC base address is wrong (firmware issue)
-- If no output at all → Code crashing before diagnostics
+- LIME at (5,0) + "SVR readback OK" → LAPIC MMIO is working, issue is elsewhere
+- ORANGE at (5,0) + "SVR write failed! Got: 0x00000000" → LAPIC MMIO is NOT working!
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
 2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
@@ -453,6 +479,7 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 - ✅ Stale MSR value after wrmsr (Fix #16 - re-read MSR to verify mode transition)
 - ✅ Truncated MSR read (Fix #17 - properly capture EAX and EDX for full 64-bit value)
 - ✅ Emergency diagnostic output (Fix #18 - force all pixels before any checks, print MSR value)
+- ⏳ LAPIC MMIO verification (Fix #19 - SVR readback test, awaiting results)
 
 ---
 
@@ -537,4 +564,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #18 added (emergency diagnostic output), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #19 added (LAPIC MMIO verification), awaiting test results
