@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #14 added (CPU interrupt acceptance test with hlt), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #15 added (disable x2APIC mode), awaiting test results
 
 ---
 
@@ -161,16 +161,33 @@ init_keyboard_interrupts(); // Second - installs IRQ entries
 - Modified `runtime.rs` - Dual-vector IDT installation (0x21 and 0x41)
 - Removed ExtINT mode - using Fixed delivery mode for diagnostic
 
-### Fix #14: CPU Interrupt Acceptance Test (HLT Diagnostic) ✅ (NEW FIX!)
+### Fix #14: CPU Interrupt Acceptance Test (HLT Diagnostic) ✅
 **Problem:** IRQ1 never fires with any previous fix. Need to determine if the CPU is receiving ANY external interrupts at all, not just keyboard IRQs.
 **Root Cause:** The `sti` instruction does NOT immediately enable interrupts on x86. External interrupts are only recognized after the next instruction boundary. The kernel may be entering busy-wait loops before interrupts can be delivered.
 **Fix:** Add `sti; nop; nop; nop; hlt` sequence immediately after enabling interrupts. The `hlt` instruction ONLY wakes on external interrupts, providing a definitive test of CPU-level interrupt acceptance.
-**Diagnostic Interpretation:**
-- If CPU wakes on keypress → IRQs are reaching the CPU (issue is in keyboard-specific code)
-- If CPU never wakes → External interrupts are disabled at CPU level (firmware/hardware issue)
+**Result:** CPU never woke from `hlt` - confirms external interrupts are disabled at CPU level
 **Code Changes:**
 - Modified `runtime.rs` - Added `hlt` diagnostic test after `sti`
 - Modified `main.rs` - Removed duplicate `sti` call (interrupts already enabled in runtime.rs)
+
+### Fix #15: Disable x2APIC Mode ✅ (NEW FIX!)
+**Problem:** CPU never woke from `hlt` test - external interrupts not reaching CPU at all. IOAPIC writes succeed (green line), LAPIC reads work, but interrupts never arrive.
+**Root Cause:** Modern UEFI firmware often enables x2APIC mode (bit 10 of IA32_APIC_BASE MSR). In x2APIC mode:
+- LAPIC MMIO at 0xFEE00000 is **IGNORED**
+- All APIC access must go through MSRs
+- Our MMIO-based LAPIC setup silently fails
+- LAPIC logic never activates, so interrupts are dropped
+
+**Symptoms of x2APIC being active:**
+- IOAPIC writes succeed (green line shows)
+- LAPIC ID reads work (MMIO returns data)
+- But interrupts NEVER arrive (LAPIC logic not active)
+- hlt never wakes (confirms no external IRQs reach CPU)
+
+**Fix:** Before LAPIC MMIO initialization, check IA32_APIC_BASE MSR bit 10. If x2APIC is enabled, disable it by clearing bit 10. Then re-enable APIC (bit 11) and proceed with MMIO setup.
+**Code Changes:**
+- Modified `runtime.rs` - Check and disable x2APIC mode before LAPIC init
+- Added debug output showing APIC mode (x2APIC vs xAPIC)
 
 ```rust
 // When gsi == 1 (legacy routing): use ExtINT mode
@@ -211,9 +228,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `14c2ef7270725028f80ba7b003da35d774fb04b06b59bb4e80887acd6a1f4f8e`
+**SHA256:** `1a906515b3d551a720adecfd32356b97dcf13958e0a1857c27827158ea7dcfb9`
 
-**This image includes all 14 fixes listed above.**
+**This image includes all 15 fixes listed above.**
 
 ---
 
@@ -313,13 +330,18 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #14 (CPU interrupt acceptance test with hlt) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #15 (disable x2APIC mode) has been implemented and built. Awaiting test results.
 
-**Diagnostic Interpretation:**
-- If CPU wakes on keypress → IRQs ARE reaching the CPU (issue is in keyboard-specific code)
-- If CPU never wakes → External interrupts are disabled at CPU level (firmware/hardware issue)
+**Expected Behavior After Fix #15:**
+- If x2APIC was enabled: Kernel will disable it and switch to xAPIC mode
+- CPU should now wake from `hlt` on keypress
+- Keyboard IRQ should start working
+- POLLING message should disappear
 
-If IRQ1 still doesn't fire after Fix #14, the remaining possible causes are:
+**Visual Indicators:**
+- Red pixel at (3,0) = x2APIC was detected and disabled
+- Green pixel at (3,0) = xAPIC mode was already active
+- "SUCCESS: CPU woke from hlt" message confirms IRQs work
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
 2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
@@ -337,7 +359,8 @@ If IRQ1 still doesn't fire after Fix #14, the remaining possible causes are:
 - ✅ ACPI interrupt override (Fix #11 - now reads MADT for overrides)
 - ✅ Delivery mode for legacy IRQs (Fix #12 - ExtINT when gsi==1 tested, didn't work)
 - ✅ Vector mapping issue (Fix #13 - both 0x21 and 0x41 tested, neither works)
-- ✅ CPU interrupt acceptance (Fix #14 - hlt diagnostic test)
+- ✅ CPU interrupt acceptance (Fix #14 - hlt test showed IRQs not reaching CPU)
+- ✅ x2APIC mode blocking MMIO (Fix #15 - disable x2APIC before LAPIC init)
 
 ---
 
@@ -422,4 +445,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #14 added (CPU interrupt acceptance test with hlt), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #15 added (disable x2APIC mode), awaiting test results
