@@ -499,24 +499,40 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #20 (comprehensive interrupt path diagnostics) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #22 (additional robust 8042 diagnostics) has been implemented and built.
 
-**Previous Test Results (Fix #18-#19):**
-- MSR confirmed correct: 0x00000000FEE00900
-- x2APIC disabled (bit 10 = 0) ✓
-- APIC enabled (bit 11 = 1) ✓
-- APIC base = 0xFEE00000 ✓
-- LAPIC MMIO working (SVR readback OK) ✓
-
-**But keyboard still doesn't work!** The issue must be in the interrupt delivery path.
-
-**Expected Output After Fix #20:**
+**Fix #20 Test Results:**
 ```
 IOAPIC RTE: Vec=0x41 Dest=0x00 Masked=NO
 CPU IF flag: ENABLED
 Testing keyboard IRQ generation...
 Keyboard reset sent. If IRQ fires, you'll see '!' at VGA top-left.
-PIC masks: PIC1=0x... PIC2=0x...
+PIC masks: PIC1=0xFF PIC2=0xFF
+```
+All interrupt path components verified correct, but no '!' appeared - keyboard not generating IRQs!
+
+**Root Cause Identified:** The 8042 PS/2 controller has IRQ1 disabled in its configuration byte (bit 0 = 0), preventing the keyboard from generating interrupts at all.
+
+**Fix #21:** Check and enable IRQ1 in 8042 configuration byte (command 0x20 read, 0x60 write).
+
+**Fix #22:** Additional robust 8042 controller diagnostics:
+- Status register sampling test (detects missing controller - all 0xFF)
+- Keyboard port enable check (bit 4 of status, command 0xAE)
+- 8042 self-test (command 0xAA, expects 0x55 response)
+
+**Expected Output After Fix #21-#22:**
+```
+IOAPIC RTE: Vec=0x41 Dest=0x00 Masked=NO
+CPU IF flag: ENABLED
+8042 Config: 0x... IRQ1=ENABLED/DISABLED - Enabling...
+8042 Status: 0x... - Controller responding
+  OB=EMPTY/EMPTY IB=EMPTY/EMPTY KBD=ON/OFF
+8042: Keyboard port already enabled/disabled - Enabling...
+8042: Running self-test...
+8042: Self-test response: 0x55 (PASS) or 0x.. (FAIL)
+Testing keyboard IRQ generation...
+Keyboard reset sent. If IRQ fires, you'll see '!' at VGA top-left.
+PIC masks: PIC1=0xFF PIC2=0xFF
 ```
 
 **Visual Indicators:**
@@ -525,13 +541,17 @@ PIC masks: PIC1=0x... PIC2=0x...
 - (3,0) Red/Green = Was x2APIC detected?
 - (4,0) Cyan/Magenta = xAPIC mode confirmation
 - (5,0) LIME/ORANGE = LAPIC MMIO verification
-- **(6,0) Green/Red = CPU IF flag verification** (NEW!)
+- (6,0) Green/Red = CPU IF flag verification
+- **(7,0) LIME/Red = IRQ1 enable status** (NEW!)
+- **(8,0) Green/Red = 8042 controller responding** (NEW!)
+- **(9,0) Green/Red = Keyboard port enabled** (NEW!)
+- **(10,0) LIME/Red = 8042 self-test pass/fail** (NEW!)
 
 **Diagnostic Guide:**
-- If Vec != 0x41 → Wrong vector in IOAPIC entry
-- If Dest != 0x00 → Wrong destination APIC ID
-- If Masked=YES → IRQ1 is still masked
-- If IF=DISABLED → sti didn't work or was cleared
+- If 8042 Status = ALL 0xFF → Controller missing/disabled
+- If 8042 self-test != 0x55 → Controller malfunction
+- If KBD=OFF → Keyboard port disabled, command 0xAE sent
+- If IRQ1=DISABLED → Configuration byte has IRQ1 disabled, command 0x60 sent
 - If '!' appears → Keyboard IS generating IRQs!
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
@@ -556,7 +576,9 @@ PIC masks: PIC1=0x... PIC2=0x...
 - ✅ Truncated MSR read (Fix #17 - properly capture EAX and EDX for full 64-bit value)
 - ✅ Emergency diagnostic output (Fix #18 - force all pixels before any checks, print MSR value)
 - ✅ LAPIC MMIO verification (Fix #19 - SVR readback test confirmed working)
-- ⏳ Interrupt path diagnostics (Fix #20 - comprehensive IRQ delivery path tests, awaiting results)
+- ✅ Interrupt path diagnostics (Fix #20 - comprehensive IRQ delivery path tests, all verified correct)
+- ⏳ 8042 configuration byte (Fix #21 - check/enable IRQ1, awaiting test results)
+- ⏳ 8042 robust diagnostics (Fix #22 - controller presence/port/self-test, awaiting test results)
 
 ---
 
@@ -641,4 +663,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #20 added (comprehensive interrupt path diagnostics), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #22 added (8042 robust diagnostics), awaiting test results
