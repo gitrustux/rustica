@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #15 added (disable x2APIC mode), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #15 added (disable x2APIC mode), hlt diagnostic removed, awaiting test results
 
 ---
 
@@ -228,9 +228,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `1a906515b3d551a720adecfd32356b97dcf13958e0a1857c27827158ea7dcfb9`
+**SHA256:** `fcafbc7f3112a579d547bf6af5d679cf38a365601393fe34c686f3cc06f50dfa`
 
-**This image includes all 15 fixes listed above.**
+**This image includes all 15 fixes listed above. Note: The hlt diagnostic test (Fix #14) has been removed from the boot path - interrupts are enabled and execution continues normally to the shell.**
 
 ---
 
