@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #15 added (disable x2APIC mode), hlt diagnostic removed, awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #16 added (re-read MSR after wrmsr), awaiting test results
 
 ---
 
@@ -189,6 +189,26 @@ init_keyboard_interrupts(); // Second - installs IRQ entries
 - Modified `runtime.rs` - Check and disable x2APIC mode before LAPIC init
 - Added debug output showing APIC mode (x2APIC vs xAPIC)
 
+### Fix #16: Re-read IA32_APIC_BASE After wrmsr ✅ (NEW FIX!)
+**Problem:** After disabling x2APIC and writing the MSR with `wrmsr`, the code used the stale `msr_value` to verify LAPIC base. Intel SDM explicitly documents that APIC mode transitions are NOT architecturally guaranteed to be immediate - software MUST re-read IA32_APIC_BASE after `wrmsr` to verify the transition took effect.
+**Root Cause:**
+- rdmsr → get current value
+- Modify msr_value → clear bit 10, set bit 11
+- wrmsr → write new value
+- **BUG:** Never re-read MSR, use stale msr_value
+- Some UEFI firmware re-writes MSR after ExitBootServices
+
+**Symptoms of stale MSR value:**
+- MMIO writes appear valid
+- LAPIC registers read back plausible values
+- But interrupt delivery logic never activates
+- hlt never wakes, keyboard stays in polling mode
+
+**Fix:** Re-read IA32_APIC_BASE immediately after wrmsr. Verify x2APIC is actually disabled (bit 10 == 0) and APIC is enabled (bit 11 == 1). Add error messages if verification fails.
+**Code Changes:**
+- Modified `runtime.rs` - Re-read MSR after wrmsr, verify mode transition
+- Added visual indicator: Cyan pixel (4,0) if xAPIC confirmed, Magenta if still x2APIC
+
 ```rust
 // When gsi == 1 (legacy routing): use ExtINT mode
 // When gsi != 1 (ACPI override): use Fixed mode
@@ -228,9 +248,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `fcafbc7f3112a579d547bf6af5d679cf38a365601393fe34c686f3cc06f50dfa`
+**SHA256:** `0632719afd13df03693277da4298421faee1464f437bd756a651f5df4bed3bac`
 
-**This image includes all 15 fixes listed above. Note: The hlt diagnostic test (Fix #14) has been removed from the boot path - interrupts are enabled and execution continues normally to the shell.**
+**This image includes all 16 fixes listed above.**
 
 ---
 
@@ -330,18 +350,19 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #15 (disable x2APIC mode) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #16 (re-read MSR after wrmsr) has been implemented and built. Awaiting test results.
 
-**Expected Behavior After Fix #15:**
-- If x2APIC was enabled: Kernel will disable it and switch to xAPIC mode
-- CPU should now wake from `hlt` on keypress
-- Keyboard IRQ should start working
-- POLLING message should disappear
+**Expected Behavior After Fix #16:**
+- x2APIC is disabled (if detected)
+- MSR is re-read to verify mode transition
+- xAPIC mode is confirmed before proceeding
+- Keyboard IRQ should now work with proper LAPIC MMIO access
 
 **Visual Indicators:**
-- Red pixel at (3,0) = x2APIC was detected and disabled
+- Red pixel at (3,0) = x2APIC was detected
 - Green pixel at (3,0) = xAPIC mode was already active
-- "SUCCESS: CPU woke from hlt" message confirms IRQs work
+- **Cyan pixel at (4,0) = xAPIC mode CONFIRMED after re-read**
+- Magenta pixel at (4,0) = x2APIC still active or APIC disabled (error)
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
 2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
@@ -361,6 +382,7 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 - ✅ Vector mapping issue (Fix #13 - both 0x21 and 0x41 tested, neither works)
 - ✅ CPU interrupt acceptance (Fix #14 - hlt test showed IRQs not reaching CPU)
 - ✅ x2APIC mode blocking MMIO (Fix #15 - disable x2APIC before LAPIC init)
+- ✅ Stale MSR value after wrmsr (Fix #16 - re-read MSR to verify mode transition)
 
 ---
 
@@ -445,4 +467,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #15 added (disable x2APIC mode), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #16 added (re-read MSR after wrmsr), awaiting test results
