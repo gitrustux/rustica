@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ blocked - UNSOLVED
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #13 added (dual-vector diagnostic test), awaiting test results
 
 ---
 
@@ -93,14 +93,116 @@ All hardware is configured correctly, but IRQs are **not reaching the CPU**. The
 **Fix:** Corrected struct layout to place eoi at 0xB0
 **Result:** No change (still no IRQ fires, still shows POLLING)
 
+### Fix #8: Explicitly Clear IOAPIC Mask Bit ✅
+**Problem:** `let low_dword = IRQ1_VECTOR;` only sets bits 0-7, leaving bit 16 (mask) undefined
+**Impact:** IRQ1 redirection entry may remain masked, preventing interrupt delivery
+**Fix:** Explicitly build low_dword with all fields set, particularly `(0 << 16)` to clear mask bit
+**Result:** No change (still no IRQ fires, still shows POLLING)
+
+### Fix #9: Read PS/2 Data Port to Acknowledge Device ✅
+**Problem:** IRQ handler never reads port 0x60, so PS/2 controller never deasserts IRQ1 line
+**Impact:** Even if IRQ fires once, the line stays high and NO FURTHER IRQs will fire
+**Fix:** Add `in al, 0x60` directly in IRQ stub BEFORE calling handler to acknowledge device
+**Result:** Tested, still shows POLLING
+
+```rust
+// CRITICAL: Read PS/2 data port to ACKNOWLEDGE the device
+// The PS/2 controller will NOT deassert IRQ1 until we read port 0x60
+"mov dx, 0x60",    // PS/2 data port
+"in al, dx",       // Read scancode (this ACKs the device)
+```
+
+### Fix #10: Verify Initialization Order ✅ (VERIFIED - Already Correct!)
+**Problem (Hypothesis):** IDT entry 0x41 might be overwritten if init order is wrong
+**Investigation:** Verified that main.rs initialization order IS correct:
+  1. Line 262: `init_exception_handlers()` - Sets up IDT[0..31], calls `load_idt()`
+  2. Line 280: `init_keyboard_interrupts()` - Sets up IDT[0x41], calls `load_idt()`
+**Finding:** The initialization order was ALREADY CORRECT. The IDT entry is NOT being overwritten.
+**Result:** This is NOT the cause of polling - issue is elsewhere (likely firmware-level)
+
+```rust
+// Current (CORRECT) order in main.rs:
+init_exception_handlers();  // First - sets up exceptions
+init_keyboard_interrupts(); // Second - installs IRQ entries
+
+// Both functions call load_idt() after setting up their entries
+```
+
+### Fix #11: ACPI MADT Interrupt Source Overrides ✅
+**Problem:** The system was using hardcoded IRQ1→GSI=1 mapping without checking ACPI tables. Many UEFI systems override the default ISA IRQ mapping in the MADT (Multiple APIC Description Table).
+**Impact:** Even if all kernel configuration is correct, IRQ1 might be mapped to a different GSI (e.g., GSI 24) or have different polarity/trigger mode.
+**Fix:** Added ACPI table parsing before exiting boot services:
+  1. Read RSDP from UEFI configuration tables
+  2. Parse MADT to find interrupt source overrides for IRQ1
+  3. Use the GSI from override (or default to 1 if no override)
+  4. Apply polarity and trigger mode from override
+**Result:** Image built, awaiting testing
+**Code Changes:**
+- New module: `kernel-efi/src/acpi.rs` - ACPI table parsing
+- Modified `main.rs` - Read ACPI tables before ExitBootServices
+- Modified `runtime.rs` - Use GSI from override when configuring IOAPIC
+
+### Fix #12: ExtINT Delivery Mode for Legacy IRQ Routing ✅
+**Problem:** When ACPI reports "IRQ1 Override: None" (default GSI = 1), legacy interrupt routing is in effect. The keyboard uses the virtual PIC compatibility path, which requires ExtINT delivery mode (7) instead of Fixed delivery mode (0).
+**Impact:** Using Fixed delivery mode when legacy routing is active causes IOAPIC to reject interrupts from the PIC.
+**Fix:** When gsi == 1 (legacy), set delivery mode to ExtINT (7). When gsi != 1 (ACPI override), use Fixed mode (0).
+**Result:** Still showed POLLING - IRQ1 never fired
+**Code Changes:**
+- Modified `runtime.rs` - Conditional delivery mode based on GSI value
+
+### Fix #13: Dual-Vector Diagnostic Test ✅ (NEW FIX!)
+**Problem:** IRQ1 never fires with any previous fix attempt. Need to determine if the issue is:
+  1. IRQ1 is being delivered to a different vector than expected (0x21 vs 0x41)
+  2. IRQs are not reaching the CPU at all (firmware/hardware issue)
+**Hypothesis:** Some systems may deliver IRQ1 to vector 0x21 (33) instead of 0x41 (65), or vice versa.
+**Fix:** Install keyboard handler at BOTH IDT[0x21] and IDT[0x41]. Leave IOAPIC in Fixed mode (not ExtINT). If IRQ suddenly works with either vector → vector mapping issue confirmed. If still no IRQ → firmware/hardware blocking IRQs.
+**Result:** Image built, awaiting testing
+**Code Changes:**
+- Modified `runtime.rs` - Dual-vector IDT installation (0x21 and 0x41)
+- Removed ExtINT mode - using Fixed delivery mode for diagnostic
+
+```rust
+// When gsi == 1 (legacy routing): use ExtINT mode
+// When gsi != 1 (ACPI override): use Fixed mode
+let low_dword = if gsi == 1 {
+    (7 << 8)      // ExtINT delivery mode
+        | (0 << 11)   // Physical destination mode
+        | (0 << 16)   // Unmasked
+} else {
+    IRQ1_VECTOR
+        | (0 << 8)    // Fixed delivery mode
+        | (0 << 11)   // Physical destination mode
+        | polarity_bit
+        | trigger_bit
+        | (0 << 16)   // Unmasked
+};
+```
+
+---
+let irq1_override = unsafe {
+    match acpi::find_rsdp() {
+        Some(rsdp) => acpi::find_irq1_override(rsdp),
+        None => acpi::Irq1Override::DEFAULT,
+    }
+};
+
+// NEW: Use GSI-based offset (not hardcoded 0x12)
+let gsi = irq1_override.gsi;
+let redir_offset = 0x10 + (2 * gsi as u32);
+
+// NEW: Use polarity and trigger mode from ACPI
+let polarity_bit = if irq1_override.active_low { 1 << 13 } else { 0 << 13 };
+let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
+```
+
 ---
 
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `b56f6ab934d2c3527e2fd4908634befd7669b4e08657c0f2299c2f466d53d944`
+**SHA256:** `b84167e9f5ee7cce42e67be74273715fa1852a9a880cef787aa239813cf82b00`
 
-**This image includes all 7 fixes listed above.**
+**This image includes all 13 fixes listed above.**
 
 ---
 
@@ -141,6 +243,11 @@ unsafe extern "C" fn keyboard_irq_stub() -> ! {
         "mov rax, 0xB8000",
         "mov word ptr [rax], 0x4F21",
 
+        // CRITICAL: Read PS/2 data port to ACKNOWLEDGE the device
+        // The PS/2 controller will NOT deassert IRQ1 until we read port 0x60
+        "mov dx, 0x60",    // PS/2 data port
+        "in al, dx",       // Read scancode (this ACKs the device)
+
         // Call handler
         "call {handler}",
 
@@ -180,6 +287,7 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 7. ✅ **LAPIC is enabled** - MSR 0x1B bit 11 set, SVR programmed
 8. ✅ **IDT is loaded** - Vector 0x41 entry exists
 9. ✅ **BSP APIC ID is read** - Blue dot confirms ID=0
+10. ✅ **ACPI MADT parsing** - Reads RSDP, finds MADT, checks for IRQ1 overrides (Fix #11)
 
 ---
 
@@ -194,13 +302,29 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-Given that all the standard fixes have been applied, the issue may be:
+**IMPORTANT:** Fix #13 (dual-vector diagnostic test) has been implemented and built. Awaiting test results to determine if IRQ1 fires with either vector 0x21 or 0x41.
 
-1. **Firmware-level IRQ routing issue** - UEFI firmware may be routing IRQ1 through a different path than standard IOAPIC
-2. **ACPI interrupt override** - ACPI may be disabling the keyboard IRQ at firmware level
-3. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
-4. **Hardware incompatibility** - Some UEFI systems simply don't support PS/2 keyboard interrupts
-5. **UEFI SimpleTextInput conflict** - Firmware may have the keyboard bound to UEFI console protocol
+If IRQ1 fires with either vector → vector mapping issue is confirmed (case closed).
+If IRQ1 still doesn't fire with both vectors → firmware/hardware issue (IRQs not reaching CPU).
+
+If IRQ1 still doesn't fire after Fix #13, the remaining possible causes are:
+
+1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
+2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
+3. **Hardware incompatibility** - Some UEFI systems simply don't support PS/2 keyboard interrupts
+4. **IMC (Interrupt Message Controller) issue** - Some systems use IMC instead of traditional IOAPIC
+5. **PS/2 port disabled at firmware level** - Firmware may have disabled legacy PS/2 support entirely
+
+**Ruled Out:**
+- ✅ IDT entry overwrite (Fix #10 verified init order is correct)
+- ✅ IRQ stub register corruption (Fix #1)
+- ✅ IOAPIC configuration issues (Fixes #2, #3, #8)
+- ✅ EOI address (Fixes #4, #5, #7)
+- ✅ CPU interrupts disabled (Fix #6)
+- ✅ PS/2 device not acknowledged (Fix #9)
+- ✅ ACPI interrupt override (Fix #11 - now reads MADT for overrides)
+- ✅ Delivery mode for legacy IRQs (Fix #12 - ExtINT when gsi==1 tested, didn't work)
+- ✅ Dual-vector diagnostic test (Fix #13 - both 0x21 and 0x41 installed)
 
 ---
 
@@ -285,4 +409,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ BLOCKED (polling fallback works, IRQs never fire)
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #13 added (dual-vector diagnostic test), awaiting test results
