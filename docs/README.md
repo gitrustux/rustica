@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #13 added (dual-vector diagnostic test), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #14 added (CPU interrupt acceptance test with hlt), awaiting test results
 
 ---
 
@@ -150,16 +150,27 @@ init_keyboard_interrupts(); // Second - installs IRQ entries
 **Code Changes:**
 - Modified `runtime.rs` - Conditional delivery mode based on GSI value
 
-### Fix #13: Dual-Vector Diagnostic Test ✅ (NEW FIX!)
+### Fix #13: Dual-Vector Diagnostic Test ✅
 **Problem:** IRQ1 never fires with any previous fix attempt. Need to determine if the issue is:
   1. IRQ1 is being delivered to a different vector than expected (0x21 vs 0x41)
   2. IRQs are not reaching the CPU at all (firmware/hardware issue)
 **Hypothesis:** Some systems may deliver IRQ1 to vector 0x21 (33) instead of 0x41 (65), or vice versa.
-**Fix:** Install keyboard handler at BOTH IDT[0x21] and IDT[0x41]. Leave IOAPIC in Fixed mode (not ExtINT). If IRQ suddenly works with either vector → vector mapping issue confirmed. If still no IRQ → firmware/hardware blocking IRQs.
-**Result:** Image built, awaiting testing
+**Fix:** Install keyboard handler at BOTH IDT[0x21] and IDT[0x41]. Leave IOAPIC in Fixed mode (not ExtINT).
+**Result:** Still showed POLLING - IRQ never fired with either vector. This ruled out vector mapping as the issue.
 **Code Changes:**
 - Modified `runtime.rs` - Dual-vector IDT installation (0x21 and 0x41)
 - Removed ExtINT mode - using Fixed delivery mode for diagnostic
+
+### Fix #14: CPU Interrupt Acceptance Test (HLT Diagnostic) ✅ (NEW FIX!)
+**Problem:** IRQ1 never fires with any previous fix. Need to determine if the CPU is receiving ANY external interrupts at all, not just keyboard IRQs.
+**Root Cause:** The `sti` instruction does NOT immediately enable interrupts on x86. External interrupts are only recognized after the next instruction boundary. The kernel may be entering busy-wait loops before interrupts can be delivered.
+**Fix:** Add `sti; nop; nop; nop; hlt` sequence immediately after enabling interrupts. The `hlt` instruction ONLY wakes on external interrupts, providing a definitive test of CPU-level interrupt acceptance.
+**Diagnostic Interpretation:**
+- If CPU wakes on keypress → IRQs are reaching the CPU (issue is in keyboard-specific code)
+- If CPU never wakes → External interrupts are disabled at CPU level (firmware/hardware issue)
+**Code Changes:**
+- Modified `runtime.rs` - Added `hlt` diagnostic test after `sti`
+- Modified `main.rs` - Removed duplicate `sti` call (interrupts already enabled in runtime.rs)
 
 ```rust
 // When gsi == 1 (legacy routing): use ExtINT mode
@@ -200,9 +211,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `b84167e9f5ee7cce42e67be74273715fa1852a9a880cef787aa239813cf82b00`
+**SHA256:** `14c2ef7270725028f80ba7b003da35d774fb04b06b59bb4e80887acd6a1f4f8e`
 
-**This image includes all 13 fixes listed above.**
+**This image includes all 14 fixes listed above.**
 
 ---
 
@@ -302,12 +313,13 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #13 (dual-vector diagnostic test) has been implemented and built. Awaiting test results to determine if IRQ1 fires with either vector 0x21 or 0x41.
+**IMPORTANT:** Fix #14 (CPU interrupt acceptance test with hlt) has been implemented and built. Awaiting test results.
 
-If IRQ1 fires with either vector → vector mapping issue is confirmed (case closed).
-If IRQ1 still doesn't fire with both vectors → firmware/hardware issue (IRQs not reaching CPU).
+**Diagnostic Interpretation:**
+- If CPU wakes on keypress → IRQs ARE reaching the CPU (issue is in keyboard-specific code)
+- If CPU never wakes → External interrupts are disabled at CPU level (firmware/hardware issue)
 
-If IRQ1 still doesn't fire after Fix #13, the remaining possible causes are:
+If IRQ1 still doesn't fire after Fix #14, the remaining possible causes are:
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
 2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
@@ -324,7 +336,8 @@ If IRQ1 still doesn't fire after Fix #13, the remaining possible causes are:
 - ✅ PS/2 device not acknowledged (Fix #9)
 - ✅ ACPI interrupt override (Fix #11 - now reads MADT for overrides)
 - ✅ Delivery mode for legacy IRQs (Fix #12 - ExtINT when gsi==1 tested, didn't work)
-- ✅ Dual-vector diagnostic test (Fix #13 - both 0x21 and 0x41 installed)
+- ✅ Vector mapping issue (Fix #13 - both 0x21 and 0x41 tested, neither works)
+- ✅ CPU interrupt acceptance (Fix #14 - hlt diagnostic test)
 
 ---
 
@@ -409,4 +422,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #13 added (dual-vector diagnostic test), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #14 added (CPU interrupt acceptance test with hlt), awaiting test results
