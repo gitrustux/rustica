@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #19 added (LAPIC MMIO verification), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #20 added (comprehensive interrupt path diagnostics), awaiting test results
 
 ---
 
@@ -287,10 +287,39 @@ MODE: xAPIC OK
 **Code Changes:**
 - Modified `runtime.rs` - Added SVR readback verification after LAPIC enable
 
+### Fix #20: Comprehensive Interrupt Path Diagnostics ✅ (NEW FIX!)
+**Problem:** Previous tests confirmed:
+- ✅ MSR is correct (0xFEE00900 - x2APIC disabled, APIC enabled, base = 0xFEE00000)
+- ✅ LAPIC MMIO is working (SVR readback succeeded)
+- ✅ IOAPIC is configured (green line)
+- ✅ IRQ1 is unmasked
+But keyboard still doesn't work! The issue must be in the interrupt delivery path.
+
+**Fix:** Added 4 comprehensive diagnostic tests to pinpoint the exact issue:
+1. **IOAPIC Redirection Entry Decoder** - Shows vector, destination APIC ID, and mask status
+2. **CPU IF Flag Verification** - Confirms CPU interrupts are actually enabled after sti
+3. **Keyboard IRQ Generation Test** - Sends reset command to keyboard to trigger IRQ
+4. **Legacy PIC Status Check** - Verifies legacy PIC isn't interfering
+
+**Expected Output:**
+```
+IOAPIC RTE: Vec=0x41 Dest=0x00 Masked=NO
+CPU IF flag: ENABLED
+Testing keyboard IRQ generation...
+Keyboard reset sent. If IRQ fires, you'll see '!' at VGA top-left.
+PIC masks: PIC1=0x... PIC2=0x...
+```
+
+**Diagnostic Guide:**
+- If Vec != 0x41 → Wrong vector in IOAPIC entry
+- If Dest != 0x00 → Wrong destination APIC ID
+- If Masked=YES → IRQ1 is still masked
+- If IF=DISABLED → sti didn't work or was cleared
+- If '!' appears → Keyboard IS generating IRQs!
+- If PIC masks show IRQ1 enabled → Legacy PIC might be stealing IRQs
+
 **Code Changes:**
-- Modified `runtime.rs` - Added emergency diagnostic section after MSR re-read
-- All diagnostic pixels now drawn before any early returns
-- MSR value printed in hex for debugging
+- Modified `runtime.rs` - Added 4 diagnostic tests in interrupt path
 
 ```rust
 // When gsi == 1 (legacy routing): use ExtINT mode
@@ -331,9 +360,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `f192990322dfcf8e0170a6c797de9aa39f17a6013536d7a37bc5a4c817f66b72`
+**SHA256:** `2c4487937233ae2932fb00085d80b42ee6c046502b18f2f4db2e096d644f352a`
 
-**This image includes all 19 fixes listed above.**
+**This image includes all 20 fixes listed above.**
 
 ---
 
@@ -433,30 +462,40 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #19 (LAPIC MMIO verification) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #20 (comprehensive interrupt path diagnostics) has been implemented and built. Awaiting test results.
 
-**Previous Test Result (Fix #18):**
+**Previous Test Results (Fix #18-#19):**
 - MSR confirmed correct: 0x00000000FEE00900
 - x2APIC disabled (bit 10 = 0) ✓
 - APIC enabled (bit 11 = 1) ✓
 - APIC base = 0xFEE00000 ✓
-- But keyboard still doesn't work!
+- LAPIC MMIO working (SVR readback OK) ✓
 
-**Expected Output After Fix #19:**
-- Additional diagnostic pixel at (5,0)
-- "LAPIC MMIO: SVR readback OK" message if MMIO working
-- "LAPIC ERROR: SVR write failed! Got: 0x..." if MMIO not working
+**But keyboard still doesn't work!** The issue must be in the interrupt delivery path.
+
+**Expected Output After Fix #20:**
+```
+IOAPIC RTE: Vec=0x41 Dest=0x00 Masked=NO
+CPU IF flag: ENABLED
+Testing keyboard IRQ generation...
+Keyboard reset sent. If IRQ fires, you'll see '!' at VGA top-left.
+PIC masks: PIC1=0x... PIC2=0x...
+```
 
 **Visual Indicators:**
 - (1,0) Yellow/Red = APIC base address check
-- (2,0) Blue = BSP APIC ID (0 is unusual but valid)
+- (2,0) Blue = BSP APIC ID
 - (3,0) Red/Green = Was x2APIC detected?
 - (4,0) Cyan/Magenta = xAPIC mode confirmation
-- **(5,0) LIME/ORANGE = LAPIC MMIO verification** (NEW!)
+- (5,0) LIME/ORANGE = LAPIC MMIO verification
+- **(6,0) Green/Red = CPU IF flag verification** (NEW!)
 
 **Diagnostic Guide:**
-- LIME at (5,0) + "SVR readback OK" → LAPIC MMIO is working, issue is elsewhere
-- ORANGE at (5,0) + "SVR write failed! Got: 0x00000000" → LAPIC MMIO is NOT working!
+- If Vec != 0x41 → Wrong vector in IOAPIC entry
+- If Dest != 0x00 → Wrong destination APIC ID
+- If Masked=YES → IRQ1 is still masked
+- If IF=DISABLED → sti didn't work or was cleared
+- If '!' appears → Keyboard IS generating IRQs!
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
 2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
@@ -479,7 +518,8 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 - ✅ Stale MSR value after wrmsr (Fix #16 - re-read MSR to verify mode transition)
 - ✅ Truncated MSR read (Fix #17 - properly capture EAX and EDX for full 64-bit value)
 - ✅ Emergency diagnostic output (Fix #18 - force all pixels before any checks, print MSR value)
-- ⏳ LAPIC MMIO verification (Fix #19 - SVR readback test, awaiting results)
+- ✅ LAPIC MMIO verification (Fix #19 - SVR readback test confirmed working)
+- ⏳ Interrupt path diagnostics (Fix #20 - comprehensive IRQ delivery path tests, awaiting results)
 
 ---
 
@@ -564,4 +604,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #19 added (LAPIC MMIO verification), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #20 added (comprehensive interrupt path diagnostics), awaiting test results
