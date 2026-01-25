@@ -1,6 +1,6 @@
 # Rustux OS - Phase 6: Interactive Shell (January 2025)
 
-**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #17 added (properly read full 64-bit MSR), awaiting test results
+**Status:** 🟡 Phase 6A-6C COMPLETE | Phase 6D Keyboard IRQ - Fix #18 added (emergency diagnostic output), awaiting test results
 
 ---
 
@@ -245,6 +245,33 @@ let msr_value = (edx as u64) << 32 | (eax as u64);
 **Code Changes:**
 - Modified `runtime.rs` - Both rdmsr calls now properly capture EAX and EDX
 
+### Fix #18: Emergency Diagnostic Output ✅ (NEW FIX!)
+**Problem:** The system still shows POLLING even after all previous fixes. Need to determine if the code is reaching the MSR re-read at all, or if it's crashing/returning early.
+**Hypothesis:** The diagnostic pixels at (1,0), (3,0), and (4,0) might not be appearing because the code is crashing or returning early before those checks. Without seeing these pixels, we can't determine where the failure is occurring.
+**Fix:** Added emergency diagnostic section immediately after MSR re-read that:
+1. Draws ALL diagnostic pixels (1,0), (3,0), (4,0) BEFORE any checks
+2. Prints the actual MSR value in hex for debugging
+3. Prints the APIC base address extracted from the MSR
+4. Prints the mode status (xAPIC OK, x2APIC STILL ACTIVE, APIC DISABLED)
+
+**Expected Output After Fix #18:**
+```
+MSR=0x[actual_value] BASE=0xFEE0
+MODE: xAPIC OK
+```
+
+**Diagnostic Interpretation:**
+- If you see all 4 pixels + MSR value → Code is reaching MSR re-read successfully
+- If Magenta at (4,0) → x2APIC is still enabled (MSR write failed)
+- If Red at (1,0) → APIC base isn't 0xFEE00000 (wrong address)
+- If NO pixels appear → Code is crashing BEFORE the MSR re-read
+- If NO MSR value prints → Code is crashing before print output
+
+**Code Changes:**
+- Modified `runtime.rs` - Added emergency diagnostic section after MSR re-read
+- All diagnostic pixels now drawn before any early returns
+- MSR value printed in hex for debugging
+
 ```rust
 // When gsi == 1 (legacy routing): use ExtINT mode
 // When gsi != 1 (ACPI override): use Fixed mode
@@ -284,9 +311,9 @@ let trigger_bit = if irq1_override.level_triggered { 1 << 15 } else { 0 << 15 };
 ## Current Image (All Fixes Applied)
 
 **File:** `/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img`
-**SHA256:** `c603eb0889a89e3132fd2a2415a1b30313bbfdcc05081c4a39b32335a8451318`
+**SHA256:** `696672edc1e74e5d040449ae65aa64e5028a89b162cfde5d3d2a89cbe8b8fd28`
 
-**This image includes all 17 fixes listed above.**
+**This image includes all 18 fixes listed above.**
 
 ---
 
@@ -386,19 +413,24 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 
 ## Remaining Possible Causes
 
-**IMPORTANT:** Fix #17 (properly read full 64-bit MSR) has been implemented and built. Awaiting test results.
+**IMPORTANT:** Fix #18 (emergency diagnostic output) has been implemented and built. Awaiting test results.
 
-**Expected Behavior After Fix #17:**
-- rdmsr properly captures both EAX and EDX registers
-- APIC base address is correctly extracted from full 64-bit value
-- LAPIC MMIO writes go to the correct address (0xFEE00000)
-- Keyboard IRQ should now work with properly configured LAPIC
+**Expected Output After Fix #18:**
+- ALL diagnostic pixels should be visible at (1,0), (2,0), (3,0), (4,0)
+- MSR value printed in hex: "MSR=0x[value] BASE=0xFEE0"
+- Mode status printed: "MODE: xAPIC OK" or "MODE: x2APIC STILL ACTIVE"
 
 **Visual Indicators:**
-- Red pixel at (3,0) = x2APIC was detected
-- Green pixel at (3,0) = xAPIC mode was already active
-- Cyan pixel at (4,0) = xAPIC mode CONFIRMED after re-read
-- Magenta pixel at (4,0) = x2APIC still active or APIC disabled (error)
+- (1,0) Yellow/Red = APIC base address check
+- (2,0) Blue = BSP APIC ID (0 is unusual but valid)
+- (3,0) Red/Green = Was x2APIC detected?
+- (4,0) Cyan/Magenta = xAPIC mode confirmation
+
+**Diagnostic Guide:**
+- If you see MSR=0xBASE=0xFEE0 + MODE: xAPIC OK → All checks passed, issue is elsewhere
+- If MODE: x2APIC STILL ACTIVE → x2APIC disable failed (MSR write ignored)
+- If BASE != 0xFEE0 → APIC base address is wrong (firmware issue)
+- If no output at all → Code crashing before diagnostics
 
 1. **UEFI SimpleTextInput Protocol conflict** - Firmware may have the keyboard bound to UEFI console protocol, preventing raw PS/2 access
 2. **Virtualization/Layer issue** - If running in a VM, the hypervisor may be filtering IRQ1
@@ -420,6 +452,7 @@ core::arch::asm!("sti", options(nostack, preserves_flags);
 - ✅ x2APIC mode blocking MMIO (Fix #15 - disable x2APIC before LAPIC init)
 - ✅ Stale MSR value after wrmsr (Fix #16 - re-read MSR to verify mode transition)
 - ✅ Truncated MSR read (Fix #17 - properly capture EAX and EDX for full 64-bit value)
+- ✅ Emergency diagnostic output (Fix #18 - force all pixels before any checks, print MSR value)
 
 ---
 
@@ -504,4 +537,4 @@ MIT License - See LICENSE file for details.
 ---
 
 *Last Updated: January 24, 2025*
-**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #17 added (properly read full 64-bit MSR), awaiting test results
+**Status:** Phase 6A-6C Complete | 6D Keyboard IRQ - Fix #18 added (emergency diagnostic output), awaiting test results
