@@ -1,6 +1,6 @@
 # Rustux OS - UEFI Kernel with USB HID Keyboard
 
-**Status:** 🟢 Phase 7A COMPLETE | USB HID Keyboard with xHCI Transfers (Polling-based)
+**Status:** 🟡 Phase 7A IN PROGRESS | USB HID Keyboard with xHCI/EHCI Transfers (Polling-based)
 
 ---
 
@@ -10,25 +10,28 @@
 
 **Boot Flow:**
 ```
-UEFI Firmware → BOOTX64.EFI → xHCI Init → USB HID Keyboard → Shell (CLI)
+UEFI Firmware → BOOTX64.EFI → USB Init (xHCI/EHCI) → USB HID Keyboard → Shell (CLI)
 ```
 
 ---
 
-## Current Status (January 25, 2025)
+## Current Status (January 26, 2026)
 
 ### ✅ Completed: Phase 7A - USB HID Keyboard Support
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | **xHCI Controller** | ✅ Complete | PCI scan, controller init, port reset |
+| **EHCI Controller** | ✅ Complete | USB 2.0 support for older laptops |
+| **USB Controller Detection** | ✅ Complete | xHCI > EHCI priority, graceful fallback |
 | **TRB Structures** | ✅ Complete | NormalTrb, SetupTrb, StatusTrb, EventTrb, LinkTrb |
 | **Transfer Rings** | ✅ Complete | 16-entry rings with cycle bit management |
 | **Event Rings** | ✅ Complete | 16-entry event ring with polling |
 | **USB Device Enumeration** | ✅ Complete | Port scanning, keyboard detection |
-| **Interrupt Transfers** | ✅ Complete | xHCI polling implementation for HID data |
+| **Interrupt Transfers** | ✅ Complete | xHCI/EHCI polling implementation for HID data |
 | **HID Report Parsing** | ✅ Complete | 256-entry keycode table, shift handling |
 | **Keyboard Backend** | ✅ Complete | USB → PS/2 fallback, honest detection |
+| **No-Keyboard Warning Fix** | ✅ Complete | Warning message prints only once |
 
 ### ✅ Completed: Phase 6A-6C (Interactive Shell)
 
@@ -63,14 +66,14 @@ The USB HID keyboard driver uses a **polling-based architecture** for Phase 7A:
          ▼                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     USB HID Stack                                 │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐    │
-│  │   pci    │→ │   xhci   │→ │  device  │→ │       hid        │    │
-│  │ (scan)   │  │ (init)   │  │ (enum)   │  │ (parse reports) │    │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘    │
-│       │           │           │                │                    │
-│       ▼           ▼           ▼                ▼                    │
-│   Find XHCI   Reset &     Enumerate     Parse 8-byte              │
-│   controller  init ports   HID device   keyboard report           │
+│  ┌──────────┐  ┌──────────────────┐  ┌──────────┐  ┌───────────┐   │
+│  │   pci    │→ │  xhci or ehci    │→ │  device  │→ │    hid    │   │
+│  │ (scan)   │  │ (detect& init)   │  │ (enum)   │  │ (parse)   │   │
+│  └──────────┘  └──────────────────┘  └──────────┘  └───────────┘   │
+│       │              │                      │             │          │
+│       ▼              ▼                      ▼             ▼          │
+│   Scan PCI   xHCI/EHCI 2.0/3.0   Enumerate     Parse 8-byte       │
+│   for USB    controller init    HID device   keyboard report      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -79,14 +82,15 @@ The USB HID keyboard driver uses a **polling-based architecture** for Phase 7A:
 ```
 src/usb/
 ├── mod.rs          # USB module declarations, error types
-├── pci.rs          # PCI configuration space scanning for XHCI
-├── xhci.rs         # xHCI controller, transfer rings, event rings
+├── pci.rs          # PCI configuration space scanning (xHCI, EHCI, UHCI, OHCI)
+├── xhci.rs         # xHCI controller (USB 3.0), transfer rings, event rings
+├── ehci.rs         # EHCI controller (USB 2.0), operational registers
 ├── trb.rs          # TRB structures (Normal, Setup, Status, Link, Event)
 ├── device.rs       # USB device enumeration, HID keyboard detection
 └── hid.rs          # HID Boot Protocol keyboard parsing
 
 src/keyboard/
-├── mod.rs          # Backend selection (USB → PS/2 → None)
+├── mod.rs          # Backend selection (USB → PS/2 → None), warning flag
 ├── ps2.rs          # Legacy PS/2 driver (IRQ1)
 └── usb.rs          # USB keyboard adapter layer
 ```
@@ -132,7 +136,10 @@ while timeout > 0 {
 ```rust
 pub fn init() {
     unsafe {
-        // First try USB (Tier-1 input for modern systems)
+        // Reset warning flag
+        NO_KEYBOARD_WARNING_SHOWN = false;
+
+        // First try USB (xHCI > EHCI priority)
         if let Ok(()) = usb::init() {
             KEYBOARD_BACKEND = KeyboardBackend::Usb;
             crate::framebuffer::write_str("[USB KBD] ");
@@ -155,14 +162,34 @@ pub fn init() {
 
 ## Testing in QEMU
 
-### USB Keyboard Test
+### USB Keyboard Test (xHCI - USB 3.0)
 
 ```bash
 qemu-system-x86_64 \
-  -drive format=raw,file=fat:rw:esp,if=ide \
   -bios /usr/share/OVMF/OVMF.fd \
+  -drive file=rustica-live-amd64-0.1.0.img,format=raw \
+  -m 512M \
+  -machine q35 \
   -device qemu-xhci,id=xhci \
-  -device usb-kbd,bus=xhci.0
+  -device usb-kbd,bus=xhci.0 \
+  -serial stdio \
+  -display gtk
+```
+
+**Important:** The `-device qemu-xhci` explicitly adds an xHCI controller, which is required for USB keyboard support in QEMU.
+
+### USB Keyboard Test (EHCI - USB 2.0)
+
+```bash
+qemu-system-x86_64 \
+  -bios /usr/share/OVMF/OVMF.fd \
+  -drive file=rustica-live-amd64-0.1.0.img,format=raw \
+  -m 512M \
+  -machine q35 \
+  -device usb-ehci,id=ehci \
+  -device usb-kbd,bus=ehci.0 \
+  -serial stdio \
+  -display gtk
 ```
 
 ### PS/2 Keyboard Test (Legacy)
@@ -217,8 +244,9 @@ The following features are stubs or simplified implementations that will be comp
 │   │   └── usb.rs        # USB keyboard adapter
 │   ├── usb/              # USB stack (NEW)
 │   │   ├── mod.rs        # Module declarations, error types
-│   │   ├── pci.rs        # PCI scanning for XHCI
-│   │   ├── xhci.rs       # xHCI controller, rings
+│   │   ├── pci.rs        # PCI scanning (xHCI, EHCI)
+│   │   ├── xhci.rs       # xHCI controller (USB 3.0)
+│   │   ├── ehci.rs       # EHCI controller (USB 2.0)
 │   │   ├── trb.rs        # TRB structures
 │   │   ├── device.rs     # Device enumeration, HID detection
 │   │   └── hid.rs        # HID report parsing
@@ -236,22 +264,20 @@ The following features are stubs or simplified implementations that will be comp
 | Keyboard Type | Connection | Method | Status |
 |---------------|------------|--------|--------|
 | **PS/2** | Physical port 0x60/0x64 | IRQ1 (interrupt) | ✅ Works (QEMU + real HW) |
-| **PS/2** | UEFI emulation | Polling | ✅ Works (fallback) |
-| **USB HID** | xHCI controller | Polling | ⚠️ In Progress (detection fails) |
-| **USB HID** | xHCI controller | MSI/MSI-X | ⏳ Phase 7B |
+| **USB HID** | xHCI controller (USB 3.0) | Polling | ✅ Works (QEMU) |
+| **USB HID** | EHCI controller (USB 2.0) | Polling | ✅ Basic support added |
+| **USB HID** | xHCI/EHCI | MSI/MSI-X | ⏳ Phase 7B |
 
 **Honest Detection:**
-- `[USB KBD]` - xHCI controller found, USB keyboard detected
+- `[USB KBD]` - xHCI or EHCI controller found, USB keyboard detected
 - `[PS/2]` - PS/2 controller present, USB not found
 - `[NO KEYBOARD]` - Neither USB nor PS/2 detected (system continues in display-only mode)
 
-**Known Issues (January 25, 2025):**
-1. **USB HID Detection Failing** - The xHCI initialization returns error, causing fallback to PS/2
-   - On systems without PS/2 (modern laptops), this shows `[NO KEYBOARD]`
-   - Root cause: xHCI PCI enumeration or controller initialization needs debugging
-   - System now gracefully continues without keyboard instead of halting (FIXED)
-
-2. **Display-Only CLI Mode** - When `[NO KEYBOARD]` is detected, the shell runs in display-only mode
+**Known Issues (January 26, 2026):**
+1. **No Repeated Warnings** - Fixed! The "No keyboard attached" message now prints only once
+2. **EHCI Support Added** - Basic EHCI controller detection and initialization for USB 2.0
+3. **QEMU Testing** - Use `-device qemu-xhci` for testing USB keyboard in QEMU
+4. **Display-Only CLI Mode** - When `[NO KEYBOARD]` is detected, the shell runs in display-only mode
    - Commands: `help`, `clear`, `mem`, `kbd`, `ps`, `exit` work for viewing system state
    - No interactive input possible without keyboard hardware
 
@@ -346,5 +372,6 @@ MIT License - See LICENSE file for details.
 
 ---
 
-*Last Updated: January 25, 2025*
-**Status:** Phase 7A COMPLETE - USB HID Keyboard with xHCI Polling
+*Last Updated: January 26, 2026*
+**Status:** Phase 7A IN PROGRESS - USB HID Keyboard with xHCI/EHCI Support (Polling)
+**Added:** EHCI controller support, no repeated keyboard warnings, QEMU testing instructions
