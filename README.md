@@ -72,44 +72,51 @@ Colors:
 ## Project Structure
 
 ```
-/var/www/rustux.com/prod/rustica/
-├── docs/              # Documentation
-│   ├── BUILD.md       # Live USB build instructions
-│   ├── IMAGE.md       # System architecture and boot flow
-│   ├── PLAN.md        # Development roadmap (Phases 1-7)
-│   └── README.md      # This file
+rustica/
+├── docs/              # IMAGE.md (architecture, boot flow), PLAN.md (roadmap)
+├── images/            # installer, live, vm images
+├── releases/          # cli, desktop, server release definitions
+├── repo/
+│   ├── kernel/        # Rustux kernel (git submodule → gitrustux/rustux)
+│   ├── apps/          # Packaged applications
+│   ├── metadata/
+│   └── system/
 ├── shell/             # Rust shell implementation (reference)
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── parser.rs
-│   │   ├── builtins.rs
-│   │   └── theme.rs
-│   └── Cargo.toml
-└── update-system/     # Live update system (planned for future)
+├── tools/             # CLI tools
+└── update-system/     # Live update system (rpg, update-daemon)
+```
+
+Clone with the kernel included:
+
+```bash
+git clone --recurse-submodules https://github.com/gitrustux/rustica.git
+# or, in an existing clone:
+git submodule update --init repo/kernel
 ```
 
 ## Build Instructions
 
-See BUILD.md for complete build instructions.
-
-### Quick Build
+The kernel and live image are built from the kernel submodule. See the [Rustux README](https://github.com/gitrustux/rustux#building) for prerequisites.
 
 ```bash
-cd /var/www/rustux.com/prod/rustux
+cd repo/kernel
 
-# Build kernel
-cargo build --release --target x86_64-unknown-uefi
+# Build kernel (UEFI application)
+cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
 
 # Build userspace programs
 cd test-userspace
 x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector \
-    shell.c -o shell.elf
+    shell/shell.c -o shell/shell.elf
 x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector \
     init.c -o init.elf
+cd ..
 
 # Build live USB image
 ./build-live-image.sh
 ```
+
+To move to a newer kernel: `git submodule update --remote repo/kernel`, then commit the new pointer.
 
 ## System Requirements
 
@@ -121,7 +128,7 @@ x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector \
 | **Storage** | 128 MB (USB) | 4 GB |
 | **Input** | PS/2 Keyboard | PS/2 or USB HID* |
 
-\* USB HID support planned for Phase 7
+\* USB HID keyboard support is in progress (Phase 7A); USB-only machines currently have no keyboard input
 
 ## Roadmap
 
@@ -191,13 +198,13 @@ YELLOW     = #F1FA8C  (r: 241, g: 250, b: 140)
 
 ## Documentation
 
-- **BUILD.md** - Complete live USB build instructions
-- **IMAGE.md** - System architecture and boot flow
-- **PLAN.md** - Development roadmap with detailed phase specs
+- **[docs/IMAGE.md](docs/IMAGE.md)** - System architecture, boot flow, and image build
+- **[docs/PLAN.md](docs/PLAN.md)** - Development roadmap with detailed phase specs
+- **[Kernel docs](https://github.com/gitrustux/rustux/tree/main/docs)** - Kernel architecture, objects, syscalls
 
 ## Contributing
 
-See PLAN.md for:
+See [docs/PLAN.md](docs/PLAN.md) for:
 - Coding standards
 - Development workflow
 - Phase specifications
@@ -209,7 +216,6 @@ MIT License - See LICENSE file for details.
 
 ## Links
 
-- **Main Repository:** https://github.com/gitrustux/rustux
 - **Kernel Repository:** https://github.com/gitrustux/rustux
 - **Apps Repository:** https://github.com/gitrustux/apps
 - **Website:** https://rustux.com
@@ -217,5 +223,5 @@ MIT License - See LICENSE file for details.
 
 ---
 
-**Last Updated:** January 23, 2025
+**Last Updated:** October 31, 2026
 **Status:** Phase 6 COMPLETE - Interactive shell running with Dracula theme
