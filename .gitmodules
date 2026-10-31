@@ -1,0 +1,4 @@
+[submodule "repo/kernel"]
+	path = repo/kernel
+	url = https://github.com/gitrustux/rustux.git
+	branch = main
