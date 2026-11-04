@@ -104,13 +104,9 @@ cd repo/kernel
 # Build kernel (UEFI application)
 cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
 
-# Build userspace programs
-cd test-userspace
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector \
-    shell/shell.c -o shell/shell.elf
-x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector \
-    init.c -o init.elf
-cd ..
+# Rebuild the C library and userspace programs (only after changing C code;
+# the built programs in userspace/bin/ are committed and embedded by the kernel build)
+userspace/build.sh
 
 # Build live USB image
 ./build-live-image.sh
