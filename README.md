@@ -83,7 +83,7 @@ rustica/
 │   └── system/
 ├── shell/             # Rust shell implementation (reference)
 ├── tools/             # CLI tools
-└── update-system/     # Live update system (rpg, update-daemon)
+└── update-system/     # Prototype of rpg (2025), superseded by the phase E plan (PACKAGES.md)
 ```
 
 Clone with the kernel included:
@@ -163,13 +163,12 @@ To move to a newer kernel: `git submodule update --remote repo/kernel`, then com
 
 ### Future Phases (Beyond Phase 7)
 
-- USB HID keyboard/mouse driver
-- Minimal GUI with window manager
-- Networking stack (TCP/IP)
-- Ext2/3 filesystem support
+- USB HID keyboard/mouse driver (done: checklist step 2b, `inputd`)
+- Minimal GUI with window manager (done: the desktop, phase F)
+- Networking stack (TCP/IP) (done: phase D)
+- Ext2/3 filesystem support (done: ext2 and ext4, steps 15-16)
+- Packages and updates: one tool, `rpg` (`rpg update`, `rpg upgrade`, `rpg install`), one signed repository at https://rustux.com/download/rustica, retired releases on archive.rustux.com (phase E, `PACKAGES.md` in the Rustux project)
 - ARM64 and RISC-V architecture support
-- Package manager
-- Live update system
 
 ## Dracula Theme (MANDATORY INVARIANT)
 

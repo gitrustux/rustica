@@ -166,6 +166,8 @@ nslookup rustux.com
 
 ### 6. Package Manager (`pkg`)
 
+> Superseded (2026-11-16): packages are installed with `rpg`, the one package tool of the phase E plan (`PACKAGES.md` in the Rustux project). This `pkg` is kept for reference only.
+
 **Location**: `src/pkgutil/`
 
 Rustica Package Manager for software installation and updates.
