@@ -28,7 +28,6 @@ fn main() {
         "init",
         "coreutils",
         "networkutils",
-        "pkgutil",
         "fwctl",
         "storageutils",
         "svc",

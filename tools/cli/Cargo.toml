@@ -9,7 +9,6 @@ members = [
     "src/init",
     "src/coreutils",
     "src/networkutils",
-    "src/pkgutil",
     "src/fwctl",
     "src/storageutils",
     "src/svc",

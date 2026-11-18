@@ -82,8 +82,7 @@ rustica/
 │   ├── metadata/
 │   └── system/
 ├── shell/             # Rust shell implementation (reference)
-├── tools/             # CLI tools
-└── update-system/     # Prototype of rpg (2025), superseded by the phase E plan (PACKAGES.md)
+└── tools/             # CLI tools
 ```
 
 Clone with the kernel included:

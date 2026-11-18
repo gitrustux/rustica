@@ -19,7 +19,6 @@ userspace/
 │   ├── coreutils/             # Core file utilities
 │   ├── sysutils/              # System utilities
 │   ├── networkutils/          # Networking tools
-│   ├── pkgutil/               # Package manager
 │   ├── fwctl/                 # Firewall controller
 │   ├── storageutils/          # Storage/filesystem tools
 │   └── svc/                   # Service manager & system-check
@@ -164,38 +163,9 @@ hostname
 nslookup rustux.com
 ```
 
-### 6. Package Manager (`pkg`)
+### 6. Packages
 
-> Superseded (2026-11-16): packages are installed with `rpg`, the one package tool of the phase E plan (`PACKAGES.md` in the Rustux project). This `pkg` is kept for reference only.
-
-**Location**: `src/pkgutil/`
-
-Rustica Package Manager for software installation and updates.
-
-**Commands**:
-- `pkg update` - Update package lists
-- `pkg install <package>` - Install package
-- `pkg remove <package>` - Remove package
-- `pkg search <query>` - Search packages
-- `pkg list` - List installed packages
-- `pkg info <package>` - Show package info
-- `pkg upgrade` - Upgrade all packages
-- `pkg repo-list` - List repositories
-
-**Repositories**:
-- http://rustux.com/kernel
-- http://rustux.com/rustica
-- http://rustux.com/apps
-
-**Usage**:
-```bash
-pkg update
-pkg search editor
-pkg install nano
-pkg remove nano
-pkg list
-pkg repo-list
-```
+Removed (2026-11-18). Packages are installed with `rpg`, Rustica's one package tool (phase E, `PACKAGES.md` in the Rustux project; the code is `userspace/rust/rpg` in the rustux repository).
 
 ### 7. Firewall Controller (`fwctl`)
 

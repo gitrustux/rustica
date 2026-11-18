@@ -15,7 +15,7 @@ All CLI utilities for the Rustica OS have been successfully implemented in Rust.
 | **Core Utils** | ls, cat, cp, mv, rm, mkdir, touch, echo | ✅ Complete | `src/coreutils/` |
 | **System Utils** | ps, kill, dmesg, uname, date | ✅ Complete | `src/sysutils/` |
 | **Network Utils** | ip, ping, hostname, nslookup | ✅ Complete | `src/networkutils/` |
-| **Package Manager** | pkg | ✅ Complete | `src/pkgutil/` |
+| **Package Manager** | pkg | Removed (2026-11-18): `rpg` (rustux `userspace/rust/rpg`) | |
 | **Firewall** | fwctl | ✅ Complete | `src/fwctl/` |
 | **Storage Utils** | mount, umount, blklist, mkfs-rfs | ✅ Complete | `src/storageutils/` |
 | **Service Manager** | svc, system-check | ✅ Complete | `src/svc/` |
